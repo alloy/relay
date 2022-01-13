@@ -54,11 +54,11 @@ function App() {
 
 ### Flow Type Parameters
 
-* `TQuery`: Type parameter that should correspond to the Flow type for the specified query. This type is available to import from the the auto-generated file: `<query_name>.graphql.js`.
+* `TQuery`: Type parameter that should correspond to the Flow type for the specified query. This type is available to import from the auto-generated file: `<query_name>.graphql.js`.
 
 ### Return Value
 
-* `data`: Object that contains data which has been read out from the Relay store; the object matches the shape of specified query.
+* `data`: Object that contains data which has been read out from the Relay store; the object matches the shape of the specified query.
     * The Flow type for data will also match this shape, and contain types derived from the GraphQL Schema. For example, the type of `data` above is: `{| user: ?{| name: ?string |} |}`.
 
 ### Behavior
@@ -69,7 +69,7 @@ function App() {
 * The component is automatically subscribed to updates to the query data: if the data for this query is updated anywhere in the app, the component will automatically re-render with the latest updated data.
 * After a component using `useLazyLoadQuery` has committed, re-rendering/updating the component will not cause the query to be fetched again.
     * If the component is re-rendered with *different query variables,* that will cause the query to be fetched again with the new variables, and potentially re-render with different data.
-    * If the component *unmounts and remounts*, that will cause the current query and variables to be refetched (depending on the `fetchPolicy` and the state of the cache).
+    * If the component *unmounts and remounts*, that will cause the current query and variables to be refetched (depending on the `fetchPolicy` and the state of the store).
 
 ### Differences with `QueryRenderer`
 
