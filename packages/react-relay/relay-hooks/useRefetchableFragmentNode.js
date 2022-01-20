@@ -258,7 +258,7 @@ function useRefetchableFragmentNode<
         ? queryRef.source
         : fetchQuery(environment, refetchQuery);
 
-    // Now wwe can we read the refetch query here using the
+    // Now we can read the refetch query here using the
     // queryRef provided from useQueryLoader. Note that the
     // network request is started during the call to refetch,
     // but if the refetch query is still in flight, we will suspend
