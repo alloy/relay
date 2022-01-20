@@ -152,6 +152,7 @@ Object containing the following properties:
 * The component will suspend if any data for that specific fragment is missing, and the data is currently being fetched by a parent query.
     * For more details on Suspense, see our [Loading States with Suspense](../../guided-tour/rendering/loading-states/) guide.
 * Note that pagination (`loadNext` or `loadPrevious`), *will not* cause the component to suspend.
+* An in-flight pagination request will automatically be disposed when the component unmounts.
 
 ### Differences with `PaginationContainer`
 

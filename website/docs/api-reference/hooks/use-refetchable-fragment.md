@@ -113,6 +113,7 @@ Tuple containing the following values
 * The component is automatically subscribed to updates to the fragment data: if the data for this particular `Comment` is updated anywhere in the app (e.g. via fetching new data, or mutating existing data), the component will automatically re-render with the latest updated data.
 * The component will suspend if any data for that specific fragment is missing, and the data is currently being fetched by a parent query.
     * For more details on Suspense, see our [Loading States with Suspense](../../guided-tour/rendering/loading-states/) guide.
+* An in-flight refetch request will automatically be disposed when the component unmounts.
 
 ### Differences with `RefetchContainer`
 
