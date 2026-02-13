@@ -1,0 +1,366 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Relay IndexedDB Store POC Benchmark</title>
+    <style>
+      body {
+        font-family: sans-serif;
+        margin: 24px;
+      }
+      label {
+        display: block;
+        margin: 8px 0;
+      }
+      button {
+        margin-top: 12px;
+      }
+      pre {
+        background: #f5f5f5;
+        padding: 12px;
+        white-space: pre-wrap;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Relay IndexedDB Store POC Benchmark</h1>
+    <p>
+      Compares in-memory only vs IDB + full materialization vs IDB direct with
+      bounded hot cache.
+    </p>
+    <label>
+      Record count:
+      <input id="recordCount" type="number" value="20000" min="1000" step="1000" />
+    </label>
+    <label>
+      Read sample count:
+      <input id="readSampleCount" type="number" value="4000" min="500" step="500" />
+    </label>
+    <label>
+      Hot cache size (IDB direct):
+      <input id="hotCacheSize" type="number" value="1000" min="100" step="100" />
+    </label>
+    <button id="run">Run benchmark</button>
+    <pre id="output"></pre>
+    <script>
+      const DB_NAME = 'relay-indexeddb-store-poc-benchmark';
+      const STORE_NAME = 'records';
+
+      function log(line) {
+        const output = document.getElementById('output');
+        output.textContent += `${line}\n`;
+      }
+
+      function now() {
+        return performance.now();
+      }
+
+      function heapBytes() {
+        if (performance && performance.memory) {
+          return performance.memory.usedJSHeapSize;
+        }
+        return null;
+      }
+
+      function makeRecord(id) {
+        return {
+          __id: id,
+          __typename: 'User',
+          id,
+          name: `User ${id}`,
+          bio: 'x'.repeat(128),
+          score: id.length,
+        };
+      }
+
+      function makeRecordID(index) {
+        return `user:${index}`;
+      }
+
+      function openDB() {
+        return new Promise((resolve, reject) => {
+          const request = indexedDB.open(DB_NAME, 1);
+          request.onupgradeneeded = event => {
+            const db = event.target.result;
+            if (!db.objectStoreNames.contains(STORE_NAME)) {
+              db.createObjectStore(STORE_NAME, {keyPath: '__id'});
+            }
+          };
+          request.onerror = () => reject(request.error);
+          request.onsuccess = () => resolve(request.result);
+        });
+      }
+
+      function clearDB(db) {
+        return new Promise((resolve, reject) => {
+          const tx = db.transaction([STORE_NAME], 'readwrite');
+          tx.objectStore(STORE_NAME).clear();
+          tx.onerror = () => reject(tx.error);
+          tx.oncomplete = () => resolve();
+        });
+      }
+
+      function bulkWrite(db, records) {
+        return new Promise((resolve, reject) => {
+          const tx = db.transaction([STORE_NAME], 'readwrite');
+          const store = tx.objectStore(STORE_NAME);
+          for (let i = 0; i < records.length; i++) {
+            store.put(records[i]);
+          }
+          tx.onerror = () => reject(tx.error);
+          tx.oncomplete = () => resolve();
+        });
+      }
+
+      function bulkReadByIDs(db, ids) {
+        return new Promise((resolve, reject) => {
+          const tx = db.transaction([STORE_NAME], 'readonly');
+          const store = tx.objectStore(STORE_NAME);
+          const results = new Array(ids.length);
+          let remaining = ids.length;
+          for (let i = 0; i < ids.length; i++) {
+            const request = store.get(ids[i]);
+            request.onerror = () => reject(request.error);
+            request.onsuccess = () => {
+              results[i] = request.result || null;
+              remaining--;
+              if (remaining === 0) {
+                resolve(results);
+              }
+            };
+          }
+        });
+      }
+
+      function readAll(db) {
+        return new Promise((resolve, reject) => {
+          const tx = db.transaction([STORE_NAME], 'readonly');
+          const request = tx.objectStore(STORE_NAME).getAll();
+          request.onerror = () => reject(request.error);
+          request.onsuccess = () => resolve(request.result);
+        });
+      }
+
+      class HotCache {
+        constructor(maxSize) {
+          this.maxSize = maxSize;
+          this.map = new Map();
+        }
+        get(id) {
+          const value = this.map.get(id);
+          if (value === undefined) {
+            return undefined;
+          }
+          this.map.delete(id);
+          this.map.set(id, value);
+          return value;
+        }
+        set(id, value) {
+          if (this.map.has(id)) {
+            this.map.delete(id);
+          }
+          this.map.set(id, value);
+          if (this.map.size > this.maxSize) {
+            const oldest = this.map.keys().next().value;
+            this.map.delete(oldest);
+          }
+        }
+        size() {
+          return this.map.size;
+        }
+      }
+
+      async function benchmarkInMemory(records, readIDs) {
+        const startHeap = heapBytes();
+        const writeStart = now();
+        const map = new Map();
+        for (let i = 0; i < records.length; i++) {
+          map.set(records[i].__id, records[i]);
+        }
+        const writeMs = now() - writeStart;
+
+        const coldStart = now();
+        for (let i = 0; i < readIDs.length; i++) {
+          map.get(readIDs[i]);
+        }
+        const coldMs = now() - coldStart;
+
+        const warmStart = now();
+        for (let i = 0; i < readIDs.length; i++) {
+          map.get(readIDs[i]);
+        }
+        const warmMs = now() - warmStart;
+        const endHeap = heapBytes();
+
+        return {
+          name: 'in-memory-only',
+          writeMs,
+          coldMs,
+          warmMs,
+          heapDeltaBytes:
+            startHeap != null && endHeap != null ? endHeap - startHeap : null,
+          memoryProxy: `mapSize=${map.size}`,
+        };
+      }
+
+      async function benchmarkIDBWithMaterializedMemory(db, records, readIDs) {
+        const startHeap = heapBytes();
+
+        const writeStart = now();
+        await bulkWrite(db, records);
+        const writeMs = now() - writeStart;
+
+        const materializeStart = now();
+        const all = await readAll(db);
+        const map = new Map();
+        for (let i = 0; i < all.length; i++) {
+          map.set(all[i].__id, all[i]);
+        }
+        const materializeMs = now() - materializeStart;
+
+        const coldStart = now();
+        for (let i = 0; i < readIDs.length; i++) {
+          map.get(readIDs[i]);
+        }
+        const coldMs = now() - coldStart;
+
+        const warmStart = now();
+        for (let i = 0; i < readIDs.length; i++) {
+          map.get(readIDs[i]);
+        }
+        const warmMs = now() - warmStart;
+        const endHeap = heapBytes();
+
+        return {
+          name: 'idb-plus-materialized-memory',
+          writeMs,
+          materializeMs,
+          coldMs,
+          warmMs,
+          heapDeltaBytes:
+            startHeap != null && endHeap != null ? endHeap - startHeap : null,
+          memoryProxy: `materializedMapSize=${map.size}`,
+        };
+      }
+
+      async function benchmarkIDBDirectWithHotCache(
+        db,
+        records,
+        readIDs,
+        hotCacheSize,
+      ) {
+        const startHeap = heapBytes();
+        const cache = new HotCache(hotCacheSize);
+
+        const writeStart = now();
+        await bulkWrite(db, records);
+        const writeMs = now() - writeStart;
+
+        const coldStart = now();
+        const coldValues = await bulkReadByIDs(db, readIDs);
+        for (let i = 0; i < readIDs.length; i++) {
+          if (coldValues[i] != null) {
+            cache.set(readIDs[i], coldValues[i]);
+          }
+        }
+        const coldMs = now() - coldStart;
+
+        const warmStart = now();
+        let misses = 0;
+        const missIDs = [];
+        for (let i = 0; i < readIDs.length; i++) {
+          const hit = cache.get(readIDs[i]);
+          if (hit === undefined) {
+            misses++;
+            missIDs.push(readIDs[i]);
+          }
+        }
+        if (missIDs.length > 0) {
+          const missValues = await bulkReadByIDs(db, missIDs);
+          for (let i = 0; i < missIDs.length; i++) {
+            if (missValues[i] != null) {
+              cache.set(missIDs[i], missValues[i]);
+            }
+          }
+        }
+        const warmMs = now() - warmStart;
+        const endHeap = heapBytes();
+
+        return {
+          name: 'idb-direct-bounded-hot-cache',
+          writeMs,
+          coldMs,
+          warmMs,
+          warmMisses: misses,
+          heapDeltaBytes:
+            startHeap != null && endHeap != null ? endHeap - startHeap : null,
+          memoryProxy: `hotCacheSize=${cache.size()}/${hotCacheSize}`,
+        };
+      }
+
+      function pickReadIDs(recordCount, readSampleCount) {
+        const ids = new Array(readSampleCount);
+        for (let i = 0; i < readSampleCount; i++) {
+          const index = (i * 17) % recordCount;
+          ids[i] = makeRecordID(index);
+        }
+        return ids;
+      }
+
+      function formatResult(result) {
+        return JSON.stringify(result, null, 2);
+      }
+
+      async function run() {
+        document.getElementById('output').textContent = '';
+        const recordCount = Number(document.getElementById('recordCount').value);
+        const readSampleCount = Number(
+          document.getElementById('readSampleCount').value,
+        );
+        const hotCacheSize = Number(document.getElementById('hotCacheSize').value);
+
+        log(
+          `Running with recordCount=${recordCount}, readSampleCount=${readSampleCount}, hotCacheSize=${hotCacheSize}`,
+        );
+
+        const records = new Array(recordCount);
+        for (let i = 0; i < recordCount; i++) {
+          const id = makeRecordID(i);
+          records[i] = makeRecord(id);
+        }
+        const readIDs = pickReadIDs(recordCount, readSampleCount);
+        const db = await openDB();
+        try {
+          await clearDB(db);
+          const inMemory = await benchmarkInMemory(records, readIDs);
+          log(formatResult(inMemory));
+
+          await clearDB(db);
+          const idbPlusMemory = await benchmarkIDBWithMaterializedMemory(
+            db,
+            records,
+            readIDs,
+          );
+          log(formatResult(idbPlusMemory));
+
+          await clearDB(db);
+          const idbDirect = await benchmarkIDBDirectWithHotCache(
+            db,
+            records,
+            readIDs,
+            hotCacheSize,
+          );
+          log(formatResult(idbDirect));
+        } finally {
+          db.close();
+        }
+      }
+
+      document.getElementById('run').addEventListener('click', () => {
+        run().catch(error => {
+          log(`Benchmark failed: ${String(error)}`);
+        });
+      });
+    </script>
+  </body>
+</html>
