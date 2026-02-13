@@ -95,3 +95,49 @@ Select architecture that:
 3. Add explicit prefetch/hydration for critical operation roots.
 4. Validate correctness with existing store tests + targeted new tests.
 5. Roll out in experiments before default path.
+
+## Benchmark runs (2026-02-13)
+
+Collected from `benchmarks/indexeddb-relay-store-poc.html` in browser:
+
+### Run A: recordCount=20000, readSampleCount=4000, hotCacheSize=1000
+
+- `in-memory-only`: write 3.9ms, cold 0.5ms, warm 0.2ms, heapDelta 0
+- `idb-plus-materialized-memory`: write 1354.3ms, materialize 122.6ms, cold 0.3ms, warm 0.4ms, heapDelta 10,462,827
+- `idb-direct-bounded-hot-cache`: write 1653.4ms, cold 121.2ms, warm 86.3ms, warmMisses 3000, heapDelta -5,481,314
+
+### Run B: recordCount=20000, readSampleCount=4000, hotCacheSize=4000
+
+- `in-memory-only`: write 4.2ms, cold 0.6ms, warm 0.2ms, heapDelta 0
+- `idb-plus-materialized-memory`: write 1679.5ms, materialize 145.0ms, cold 0.5ms, warm 0.3ms, heapDelta 12,082,124
+- `idb-direct-bounded-hot-cache`: write 1744.0ms, cold 104.4ms, warm 0.3ms, warmMisses 0, heapDelta 10,433,146
+
+### Run C: recordCount=50000, readSampleCount=10000, hotCacheSize=2000
+
+- `in-memory-only`: write 8.9ms, cold 1.4ms, warm 0.6ms, heapDelta 0
+- `idb-plus-materialized-memory`: write 3848.2ms, materialize 324.6ms, cold 0.3ms, warm 0.3ms, heapDelta 19,191,675
+- `idb-direct-bounded-hot-cache`: write 4274.8ms, cold 427.4ms, warm 273.7ms, warmMisses 8000, heapDelta 8,647,871
+
+### Initial takeaways
+
+1. Full materialization keeps read speed near in-memory baseline but increases JS heap sharply.
+2. Direct IDB + bounded cache reduces memory pressure relative to full materialization, but read speed depends strongly on cache hit rate.
+3. To reach "best read speed + low memory", the POC should combine bounded hot cache with query-root prefetch/hydration and read batching.
+
+## Next implementation plan (full POC)
+
+1. Add `RelayIndexedDBRecordSource` experiment behind a feature flag with:
+   - bounded in-memory LRU hot cache
+   - batched `publish` write API that commits a single readwrite transaction
+   - batched read API for cold misses
+2. Keep `RelayOptimisticRecordSource` unchanged and layered in-memory above the base source.
+3. Add `RelayModernEnvironment` experiment option to opt into IDB source in browser.
+4. Add tests for:
+   - consistency between cache+IDB reads
+   - deletion/remove semantics
+   - publish transaction failure handling
+   - optimistic snapshot/restore compatibility
+5. Add benchmark extensions:
+   - repeated operation-level read traces
+   - varying cache sizes and working set locality
+   - throughput of single-transaction publish for normalized payload batches
