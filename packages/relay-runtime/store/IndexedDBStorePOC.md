@@ -141,3 +141,94 @@ Collected from `benchmarks/indexeddb-relay-store-poc.html` in browser:
    - repeated operation-level read traces
    - varying cache sizes and working set locality
    - throughput of single-transaction publish for normalized payload batches
+
+## Detailed implementation plan
+
+### Phase 0: Scope, flags, and guardrails
+
+1. Add an experiment flag in `RelayFeatureFlags` to opt into IndexedDB backing in browser-only environments.
+2. Keep default behavior unchanged (`RelayRecordSource` in-memory).
+3. Ensure all new IndexedDB code paths no-op or fall back safely when `indexedDB` is unavailable.
+
+### Phase 1: Introduce experimental IndexedDB-backed source
+
+Target files (new):
+
+- `packages/relay-runtime/store/RelayIndexedDBRecordSource.js`
+- `packages/relay-runtime/store/__tests__/RelayIndexedDBRecordSource-test.js`
+
+Target files (minimal updates):
+
+- `packages/relay-runtime/store/RelayStoreTypes.js` (experimental helper typing only)
+- `packages/relay-runtime/store/RelayFeatureFlags.js` (flag)
+
+Implementation details:
+
+1. Implement a bounded LRU hot cache (`Map`-based) for synchronous `get` reads.
+2. Persist canonical records in IndexedDB object store keyed by `DataID`.
+3. Preserve `MutableRecordSource` surface (`get`, `set`, `delete`, `remove`, `clear`, `has`, `getStatus`, `getRecordIDs`, `toJSON`) with:
+   - synchronous reads from hot cache + known metadata
+   - async flush queue that commits write batches in one `readwrite` transaction
+4. Add explicit `prefetch(dataIDs)` helper (experimental) that warms hot cache via one `readonly` transaction.
+5. Add explicit `flush()` helper (experimental) for deterministic test synchronization.
+
+### Phase 2: Integrate with publish path (single transaction per normalized payload)
+
+Target file:
+
+- `packages/relay-runtime/store/RelayModernStore.js`
+
+Implementation details:
+
+1. Detect IndexedDB-backed source and route `publish` updates through a batched write method.
+2. Ensure one publish call writes all changed normalized records in one IndexedDB transaction.
+3. Keep `updatedRecordIDs` and invalidation behavior unchanged.
+4. Retain current optimistic layering (`RelayOptimisticRecordSource`) over the base source.
+
+### Phase 3: Environment wiring
+
+Target file:
+
+- `packages/relay-runtime/store/RelayModernEnvironment.js`
+
+Implementation details:
+
+1. Add experimental environment option (e.g. `indexedDBStorageConfig`) that instantiates the IndexedDB-backed source when enabled.
+2. Fall back to existing in-memory source automatically on unsupported platforms or initialization failure.
+3. Add instrumentation hooks (`log`) for source creation, flush latency, flush failures, prefetch latency.
+
+### Phase 4: Correctness and regression tests
+
+Test suites:
+
+1. `RelayIndexedDBRecordSource-test.js`
+   - set/get/delete/remove/clear/getStatus/size semantics parity
+   - hot cache eviction behavior
+   - flush error handling + recovery
+2. `RelayModernStore-test.js` (targeted additions)
+   - publish updates are visible through lookup with IndexedDB source
+   - invalidation epoch semantics remain unchanged
+   - snapshot/restore optimistic behavior remains unchanged
+3. `RelayModernEnvironment` tests (targeted)
+   - config gating and fallback behavior
+
+### Phase 5: Benchmark extension and acceptance gates
+
+Extend `benchmarks/indexeddb-relay-store-poc.html` with:
+
+1. Operation-locality traces (high locality vs low locality).
+2. Warmup/prefetch stage timing separate from steady-state warm reads.
+3. Publish throughput benchmark that simulates normalized payload batch writes per operation.
+
+Acceptance criteria for advancing past POC:
+
+1. Warm read latency (with realistic locality + prefetch) within acceptable delta of materialized-memory baseline.
+2. Heap growth materially lower than full materialization under same data volume.
+3. Stable publish throughput and no correctness regressions in existing store tests.
+
+### Phase 6: Rollout and risk management
+
+1. Ship behind disabled-by-default flag.
+2. Run benchmark and targeted integration tests in CI for the experiment path.
+3. Collect metrics from internal adopters before considering broader enablement.
+4. Define rollback path: disable flag and revert to in-memory source without data loss.
