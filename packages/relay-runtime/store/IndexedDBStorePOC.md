@@ -94,6 +94,9 @@ Additional storage/read scenario names in benchmark output:
 - `rxdb-dexie`
 - `rxdb-memory`
 
+RxDB modules are loaded from local `node_modules` (installed via package manager),
+not from remote CDN imports.
+
 ## How to run benchmark
 
 From repository root:

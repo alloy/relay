@@ -3,6 +3,15 @@
   <head>
     <meta charset="utf-8" />
     <title>Relay IndexedDB Store POC Benchmark</title>
+    <script type="importmap">
+      {
+        "imports": {
+          "dexie": "/node_modules/dexie/dist/dexie.mjs",
+          "rxjs": "/node_modules/rxjs/dist/esm/index.js",
+          "rxjs/": "/node_modules/rxjs/dist/esm/"
+        }
+      }
+    </script>
     <style>
       body {
         font-family: sans-serif;
@@ -115,9 +124,9 @@
       async function loadRxDBModules() {
         if (rxdbModulesPromise === null) {
           rxdbModulesPromise = Promise.all([
-            import('https://esm.sh/rxdb@16?bundle'),
-            import('https://esm.sh/rxdb/plugins/storage-dexie?bundle'),
-            import('https://esm.sh/rxdb/plugins/storage-memory?bundle'),
+            import('/node_modules/rxdb/dist/esm/index.js'),
+            import('/node_modules/rxdb/dist/esm/plugins/storage-dexie/index.js'),
+            import('/node_modules/rxdb/dist/esm/plugins/storage-memory/index.js'),
           ]).then(([rxdb, dexieStorage, memoryStorage]) => ({
             createRxDatabase: rxdb.createRxDatabase,
             getRxStorageDexie: dexieStorage.getRxStorageDexie,
@@ -1174,7 +1183,7 @@
               log(
                 `RxDB storage benchmarks skipped due to import or initialization error: ${String(
                   error,
-                )}`,
+                )}. If using a static server, ensure local node_modules ESM imports are resolvable.`,
               );
             }
           }
@@ -1233,7 +1242,7 @@
               log(
                 `Relay RxDB pipeline benchmarks skipped due to import or initialization error: ${String(
                   error,
-                )}`,
+                )}. If using a static server, ensure local node_modules ESM imports are resolvable.`,
               );
             }
           }
