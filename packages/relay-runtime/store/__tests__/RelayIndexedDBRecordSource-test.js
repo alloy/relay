@@ -21,7 +21,7 @@ describe('RelayIndexedDBRecordSource', () => {
     global.indexedDB = originalIndexedDB;
   });
 
-  it('supports set/get/delete(NONEXISTENT)/remove(UNKNOWN) without IndexedDB', async () => {
+  it('handles set/get/delete/remove semantics without IndexedDB', async () => {
     global.indexedDB = undefined;
     const source = new RelayIndexedDBRecordSource();
     const record = RelayModernRecord.create('user:1', 'User');

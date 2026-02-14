@@ -270,11 +270,11 @@ class RelayIndexedDBRecordSource implements MutableRecordSource {
       this._dbPromise = new Promise((resolve, reject) => {
         const request = globalThis.indexedDB.open(this._dbName, this._dbVersion);
         request.onupgradeneeded = event => {
-          const target = event.target;
-          if (target == null) {
+          const eventTarget = event.target;
+          if (eventTarget == null) {
             return;
           }
-          const db = target.result;
+          const db = eventTarget.result;
           if (db == null) {
             return;
           }
