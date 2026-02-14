@@ -148,7 +148,7 @@
           const STORE_NAME = ${JSON.stringify(STORE_NAME)};
           let dbPromise = null;
           function openDB() {
-            if (dbPromise == null) {
+            if (dbPromise === null) {
               dbPromise = new Promise((resolve, reject) => {
                 const request = indexedDB.open(DB_NAME, 1);
                 request.onupgradeneeded = event => {
@@ -230,7 +230,7 @@
         worker.onmessage = event => {
           const {id, ok, result, error} = event.data;
           const handlers = pending.get(id);
-          if (handlers == null) {
+          if (handlers === undefined) {
             return;
           }
           pending.delete(id);
@@ -429,7 +429,7 @@
           const coldStart = now();
           const coldValues = await workerClient.bulkReadByIDs(readIDs);
           for (let i = 0; i < readIDs.length; i++) {
-            if (coldValues[i] != null) {
+            if (coldValues[i] !== null) {
               cache.set(readIDs[i], coldValues[i]);
             }
           }
@@ -448,7 +448,7 @@
           if (missIDs.length > 0) {
             const missValues = await workerClient.bulkReadByIDs(missIDs);
             for (let i = 0; i < missIDs.length; i++) {
-              if (missValues[i] != null) {
+              if (missValues[i] !== null) {
                 cache.set(missIDs[i], missValues[i]);
               }
             }
@@ -463,7 +463,9 @@
             warmMs,
             warmMisses: misses,
             heapDeltaBytes:
-              startHeap != null && endHeap != null ? endHeap - startHeap : null,
+              startHeap !== null && endHeap !== null
+                ? endHeap - startHeap
+                : null,
             memoryProxy: `hotCacheSize=${cache.size()}/${hotCacheSize}`,
           };
         } finally {
