@@ -243,7 +243,11 @@ class RelayIndexedDBRecordSource implements MutableRecordSource {
   _setCachedRecord(dataID: DataID, record: ?Record): void {
     this._records.set(dataID, record);
     this._touch(dataID, record);
-    while (this._records.size > this._cacheSize) {
+    const overflow = this._records.size - this._cacheSize;
+    if (overflow <= 0) {
+      return;
+    }
+    for (let ii = 0; ii < overflow; ii++) {
       const firstKey = this._records.keys().next().value;
       if (firstKey == null) {
         break;
@@ -265,7 +269,14 @@ class RelayIndexedDBRecordSource implements MutableRecordSource {
       this._dbPromise = new Promise((resolve, reject) => {
         const request = globalThis.indexedDB.open(this._dbName, 1);
         request.onupgradeneeded = event => {
-          const db = event.target.result;
+          const target = event.target;
+          if (target == null) {
+            return;
+          }
+          const db = target.result;
+          if (db == null) {
+            return;
+          }
           if (!db.objectStoreNames.contains(this._objectStoreName)) {
             db.createObjectStore(this._objectStoreName);
           }
