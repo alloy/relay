@@ -26,7 +26,7 @@
     <h1>Relay IndexedDB Store POC Benchmark</h1>
     <p>
       Compares in-memory only vs IDB + full materialization vs IDB direct with
-      bounded hot cache.
+      bounded hot cache vs IDB via worker postMessage with bounded hot cache.
     </p>
     <label>
       Record count:
@@ -44,6 +44,7 @@
     <pre id="output"></pre>
     <script>
       const DB_NAME = 'relay-indexeddb-store-poc-benchmark';
+      const WORKER_DB_NAME = 'relay-indexeddb-store-poc-benchmark-worker';
       const STORE_NAME = 'records';
 
       function log(line) {
@@ -139,6 +140,119 @@
           request.onerror = () => reject(request.error);
           request.onsuccess = () => resolve(request.result);
         });
+      }
+
+      function createWorkerClient() {
+        const workerSource = `
+          const DB_NAME = ${JSON.stringify(WORKER_DB_NAME)};
+          const STORE_NAME = ${JSON.stringify(STORE_NAME)};
+          let dbPromise = null;
+          function openDB() {
+            if (dbPromise == null) {
+              dbPromise = new Promise((resolve, reject) => {
+                const request = indexedDB.open(DB_NAME, 1);
+                request.onupgradeneeded = event => {
+                  const db = event.target.result;
+                  if (!db.objectStoreNames.contains(STORE_NAME)) {
+                    db.createObjectStore(STORE_NAME, {keyPath: '__id'});
+                  }
+                };
+                request.onerror = () => reject(request.error);
+                request.onsuccess = () => resolve(request.result);
+              });
+            }
+            return dbPromise;
+          }
+          async function clearDB() {
+            const db = await openDB();
+            await new Promise((resolve, reject) => {
+              const tx = db.transaction([STORE_NAME], 'readwrite');
+              tx.objectStore(STORE_NAME).clear();
+              tx.onerror = () => reject(tx.error);
+              tx.oncomplete = () => resolve();
+            });
+          }
+          async function bulkWrite(records) {
+            const db = await openDB();
+            await new Promise((resolve, reject) => {
+              const tx = db.transaction([STORE_NAME], 'readwrite');
+              const store = tx.objectStore(STORE_NAME);
+              for (let i = 0; i < records.length; i++) {
+                store.put(records[i]);
+              }
+              tx.onerror = () => reject(tx.error);
+              tx.oncomplete = () => resolve();
+            });
+          }
+          async function bulkReadByIDs(ids) {
+            const db = await openDB();
+            return await new Promise((resolve, reject) => {
+              const tx = db.transaction([STORE_NAME], 'readonly');
+              const store = tx.objectStore(STORE_NAME);
+              const results = new Array(ids.length);
+              let remaining = ids.length;
+              for (let i = 0; i < ids.length; i++) {
+                const request = store.get(ids[i]);
+                request.onerror = () => reject(request.error);
+                request.onsuccess = () => {
+                  results[i] = request.result || null;
+                  remaining--;
+                  if (remaining === 0) {
+                    resolve(results);
+                  }
+                };
+              }
+            });
+          }
+          self.onmessage = async event => {
+            const {id, command, payload} = event.data;
+            try {
+              let result = null;
+              if (command === 'clear') {
+                await clearDB();
+              } else if (command === 'bulkWrite') {
+                await bulkWrite(payload.records);
+              } else if (command === 'bulkReadByIDs') {
+                result = await bulkReadByIDs(payload.ids);
+              } else {
+                throw new Error('Unknown command: ' + command);
+              }
+              self.postMessage({id, ok: true, result});
+            } catch (error) {
+              self.postMessage({id, ok: false, error: String(error)});
+            }
+          };
+        `;
+        const blob = new Blob([workerSource], {type: 'application/javascript'});
+        const worker = new Worker(URL.createObjectURL(blob));
+        let nextID = 0;
+        const pending = new Map();
+        worker.onmessage = event => {
+          const {id, ok, result, error} = event.data;
+          const handlers = pending.get(id);
+          if (handlers == null) {
+            return;
+          }
+          pending.delete(id);
+          if (ok) {
+            handlers.resolve(result);
+          } else {
+            handlers.reject(new Error(error));
+          }
+        };
+        function send(command, payload) {
+          return new Promise((resolve, reject) => {
+            const id = ++nextID;
+            pending.set(id, {resolve, reject});
+            worker.postMessage({id, command, payload});
+          });
+        }
+        return {
+          clear: () => send('clear', {}),
+          bulkWrite: records => send('bulkWrite', {records}),
+          bulkReadByIDs: ids => send('bulkReadByIDs', {ids}),
+          dispose: () => worker.terminate(),
+        };
       }
 
       class HotCache {
@@ -298,6 +412,65 @@
         };
       }
 
+      async function benchmarkIDBWorkerPostMessageWithHotCache(
+        records,
+        readIDs,
+        hotCacheSize,
+      ) {
+        const startHeap = heapBytes();
+        const cache = new HotCache(hotCacheSize);
+        const workerClient = createWorkerClient();
+        try {
+          await workerClient.clear();
+          const writeStart = now();
+          await workerClient.bulkWrite(records);
+          const writeMs = now() - writeStart;
+
+          const coldStart = now();
+          const coldValues = await workerClient.bulkReadByIDs(readIDs);
+          for (let i = 0; i < readIDs.length; i++) {
+            if (coldValues[i] != null) {
+              cache.set(readIDs[i], coldValues[i]);
+            }
+          }
+          const coldMs = now() - coldStart;
+
+          const warmStart = now();
+          let misses = 0;
+          const missIDs = [];
+          for (let i = 0; i < readIDs.length; i++) {
+            const hit = cache.get(readIDs[i]);
+            if (hit === undefined) {
+              misses++;
+              missIDs.push(readIDs[i]);
+            }
+          }
+          if (missIDs.length > 0) {
+            const missValues = await workerClient.bulkReadByIDs(missIDs);
+            for (let i = 0; i < missIDs.length; i++) {
+              if (missValues[i] != null) {
+                cache.set(missIDs[i], missValues[i]);
+              }
+            }
+          }
+          const warmMs = now() - warmStart;
+          const endHeap = heapBytes();
+
+          return {
+            name: 'idb-worker-postmessage-bounded-hot-cache',
+            writeMs,
+            coldMs,
+            warmMs,
+            warmMisses: misses,
+            heapDeltaBytes:
+              startHeap != null && endHeap != null ? endHeap - startHeap : null,
+            memoryProxy: `hotCacheSize=${cache.size()}/${hotCacheSize}`,
+          };
+        } finally {
+          workerClient.dispose();
+        }
+      }
+
       function pickReadIDs(recordCount, readSampleCount) {
         const ids = new Array(readSampleCount);
         for (let i = 0; i < readSampleCount; i++) {
@@ -351,6 +524,13 @@
             hotCacheSize,
           );
           log(formatResult(idbDirect));
+
+          const workerIDB = await benchmarkIDBWorkerPostMessageWithHotCache(
+            records,
+            readIDs,
+            hotCacheSize,
+          );
+          log(formatResult(workerIDB));
         } finally {
           db.close();
         }

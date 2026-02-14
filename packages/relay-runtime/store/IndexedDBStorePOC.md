@@ -56,6 +56,7 @@ The benchmark compares:
 1. **In-memory only** (best-case speed, worst memory for large datasets)
 2. **IDB + full materialization** (persist + duplicate memory source)
 3. **IDB direct with bounded hot cache** (target architecture)
+4. **IDB via worker + postMessage + bounded hot cache** (worker-thread IDB pattern)
 
 ### Measurements
 
