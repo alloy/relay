@@ -28,6 +28,7 @@ const {EXISTENT, NONEXISTENT, UNKNOWN} = RelayRecordState;
 const DEFAULT_CACHE_SIZE = 1000;
 const DEFAULT_DB_NAME = 'relay-runtime-store';
 const DEFAULT_OBJECT_STORE_NAME = 'records';
+const DEFAULT_DB_VERSION = 1;
 
 type PutOperation = {type: 'put', dataID: DataID, record: ?Record};
 type DeleteOperation = {type: 'remove', dataID: DataID};
@@ -41,6 +42,7 @@ type QueuedOperation = PutOperation | DeleteOperation | ClearOperation;
 class RelayIndexedDBRecordSource implements MutableRecordSource {
   _cacheSize: number;
   _dbName: string;
+  _dbVersion: number;
   _objectStoreName: string;
   _knownRecordStates: Map<DataID, RecordState>;
   _records: Map<DataID, ?Record>;
@@ -54,11 +56,13 @@ class RelayIndexedDBRecordSource implements MutableRecordSource {
     options?: {
       cacheSize?: number,
       dbName?: string,
+      dbVersion?: number,
       objectStoreName?: string,
     },
   ) {
     this._cacheSize = options?.cacheSize ?? DEFAULT_CACHE_SIZE;
     this._dbName = options?.dbName ?? DEFAULT_DB_NAME;
+    this._dbVersion = options?.dbVersion ?? DEFAULT_DB_VERSION;
     this._objectStoreName = options?.objectStoreName ?? DEFAULT_OBJECT_STORE_NAME;
     this._knownRecordStates = new Map();
     this._records = new Map();
@@ -92,6 +96,7 @@ class RelayIndexedDBRecordSource implements MutableRecordSource {
     options?: {
       cacheSize?: number,
       dbName?: string,
+      dbVersion?: number,
       objectStoreName?: string,
     },
   ): MutableRecordSource {
@@ -190,10 +195,6 @@ class RelayIndexedDBRecordSource implements MutableRecordSource {
       const tx = db.transaction([this._objectStoreName], 'readonly');
       const store = tx.objectStore(this._objectStoreName);
       let remaining = dataIDs.length;
-      if (remaining === 0) {
-        resolve();
-        return;
-      }
       dataIDs.forEach(dataID => {
         const request = store.get(dataID);
         request.onerror = () => {
@@ -213,7 +214,7 @@ class RelayIndexedDBRecordSource implements MutableRecordSource {
           }
           remaining--;
           if (remaining === 0) {
-            resolve();
+            resolve(undefined);
           }
         };
       });
@@ -267,7 +268,7 @@ class RelayIndexedDBRecordSource implements MutableRecordSource {
   _openDB(): Promise<any> {
     if (this._dbPromise == null) {
       this._dbPromise = new Promise((resolve, reject) => {
-        const request = globalThis.indexedDB.open(this._dbName, 1);
+        const request = globalThis.indexedDB.open(this._dbName, this._dbVersion);
         request.onupgradeneeded = event => {
           const target = event.target;
           if (target == null) {
