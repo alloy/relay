@@ -96,6 +96,7 @@ Additional storage/read scenario names in benchmark output:
 
 RxDB modules are loaded from local `node_modules` (installed via package manager),
 not from remote CDN imports.
+This requires serving from repository root so `/node_modules/*` paths resolve.
 
 ## How to run benchmark
 

@@ -3358,7 +3358,7 @@ dexie@4.0.10:
   resolved "https://registry.yarnpkg.com/dexie/-/dexie-4.0.10.tgz#979e3ee75993b44eea3852f97ceb198019d5b287"
   integrity sha512-eM2RzuR3i+M046r2Q0Optl3pS31qTWf8aFuA7H9wnsHTwl8EPvroVLwvQene/6paAs39Tbk6fWZcn2aZaHkc/w==
 
-dexie@4.3.0:
+dexie@^4.3.0:
   version "4.3.0"
   resolved "https://registry.yarnpkg.com/dexie/-/dexie-4.3.0.tgz#5b6b9e3ed4e48ba1c36442e6a7d07b86335e2df5"
   integrity sha512-5EeoQpJvMKHe6zWt/FSIIuRa3CWlZeIl6zKXt+Lz7BU6RoRRLgX9dZEynRfXrkLcldKYCBiz7xekTEylnie1Ug==
@@ -7563,7 +7563,7 @@ run-parallel@^1.1.9:
   dependencies:
     queue-microtask "^1.2.2"
 
-rxdb@16.21.1:
+rxdb@^16.21.1:
   version "16.21.1"
   resolved "https://registry.yarnpkg.com/rxdb/-/rxdb-16.21.1.tgz#494e10eba64ab0d41b4c2710ce12a64afe332699"
   integrity sha512-4yFfP9qw6QFFPueR9Dlwi/WYZ4u79AZ8ltLsDCB1PXhAuEj0vRPbaUiKR/U2iXdGb+1tDqj9d4hhrdtSLvR5xA==
@@ -7601,7 +7601,7 @@ rxdb@16.21.1:
     ws "8.18.3"
     z-schema "6.0.2"
 
-rxjs@7.8.2:
+rxjs@^7.8.2:
   version "7.8.2"
   resolved "https://registry.yarnpkg.com/rxjs/-/rxjs-7.8.2.tgz#955bc473ed8af11a002a2be52071bf475638607b"
   integrity sha512-dhKf903U/PQZY6boNNtAGdWbG85WAbjT/1xYoZIC7FAY0yWapOBQVsVrDl58W86//e1VpMNBtRV4MaXfdMySFA==
