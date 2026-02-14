@@ -27,7 +27,7 @@
     <p>
       Compares in-memory only vs IDB + full materialization vs IDB direct with
       bounded hot cache vs IDB via worker postMessage with bounded hot cache vs
-      high-message-volume worker postMessage.
+      high-message-volume worker postMessage, with optional RxDB storages.
     </p>
     <label>
       Record count:
@@ -52,6 +52,10 @@
     <label>
       Relay payload friends per user:
       <input id="relayFriendsPerUser" type="number" value="3" min="1" step="1" />
+    </label>
+    <label>
+      Run RxDB scenarios:
+      <input id="runRxDBScenarios" type="checkbox" checked />
     </label>
     <button id="run">Run benchmark</button>
     <pre id="output"></pre>
@@ -105,6 +109,22 @@
           }
         }
         return null;
+      }
+
+      let rxdbModulesPromise = null;
+      async function loadRxDBModules() {
+        if (rxdbModulesPromise === null) {
+          rxdbModulesPromise = Promise.all([
+            import('https://esm.sh/rxdb@16?bundle'),
+            import('https://esm.sh/rxdb/plugins/storage-dexie?bundle'),
+            import('https://esm.sh/rxdb/plugins/storage-memory?bundle'),
+          ]).then(([rxdb, dexieStorage, memoryStorage]) => ({
+            createRxDatabase: rxdb.createRxDatabase,
+            getRxStorageDexie: dexieStorage.getRxStorageDexie,
+            getRxStorageMemory: memoryStorage.getRxStorageMemory,
+          }));
+        }
+        return rxdbModulesPromise;
       }
 
       function makeRecord(id) {
@@ -722,6 +742,53 @@
         }));
       }
 
+      /**
+       * Benchmarks RxDB storage backends for write + cold/warm read latency.
+       * `storageKind` is one of: 'dexie' (IndexedDB) or 'memory'.
+       */
+      async function benchmarkRxDBStorage(records, readIDs, storageKind) {
+        const startHeap = heapBytes();
+        const {db, collection} = await createRxDBCollection(storageKind);
+        try {
+          const wrapped = wrapRecords(records);
+          const writeStart = now();
+          await collection.bulkUpsert(wrapped);
+          const writeMs = now() - writeStart;
+
+          const coldStart = now();
+          const coldHits = await countRxDBHits(collection, readIDs);
+          const coldMs = now() - coldStart;
+
+          const warmStart = now();
+          const warmHits = await countRxDBHits(collection, readIDs);
+          const warmMs = now() - warmStart;
+          const endHeap = heapBytes();
+          return {
+            name: `rxdb-${storageKind}`,
+            writeMs,
+            coldMs,
+            warmMs,
+            coldHits,
+            warmHits,
+            heapDeltaBytes: heapDelta(startHeap, endHeap),
+            memoryProxy: `rxdbWrappedRecords=${wrapped.length}`,
+          };
+        } finally {
+          await db.remove();
+        }
+      }
+
+      async function countRxDBHits(collection, readIDs) {
+        if (typeof collection.findByIds === 'function') {
+          const docsByID = await collection.findByIds(readIDs);
+          return docsByID.size;
+        }
+        // Compatibility fallback for older RxDB APIs when findByIds is unavailable.
+        // This intentionally performs one query per id only in legacy mode.
+        const docs = await Promise.all(readIDs.map(id => collection.findOne(id).exec()));
+        return docs.reduce((hits, doc) => hits + (doc !== null ? 1 : 0), 0);
+      }
+
       function recordsObjectToArray(records) {
         const ids = Object.keys(records);
         const out = new Array(ids.length);
@@ -729,6 +796,59 @@
           out[i] = records[ids[i]];
         }
         return out;
+      }
+
+      async function createRxDBCollection(storageKind) {
+        const {createRxDatabase, getRxStorageDexie, getRxStorageMemory} =
+          await loadRxDBModules();
+        const storage =
+          storageKind === 'dexie' ? getRxStorageDexie() : getRxStorageMemory();
+        const db = await createRxDatabase({
+          name: `relayBench_${storageKind}_${Date.now()}_${Math.floor(
+            Math.random() * 10000,
+          )}`,
+          multiInstance: false,
+          ignoreDuplicate: true,
+          storage,
+        });
+        const schema = {
+          title: 'benchmark schema',
+          version: 0,
+          primaryKey: '__id',
+          type: 'object',
+          properties: {
+            __id: {
+              type: 'string',
+              maxLength: 200,
+            },
+            value: {
+              type: 'object',
+              additionalProperties: true,
+            },
+          },
+          required: ['__id', 'value'],
+          additionalProperties: false,
+        };
+        const collections = await db.addCollections({
+          records: {
+            schema,
+          },
+        });
+        return {
+          db,
+          collection: collections.records,
+        };
+      }
+
+      function wrapRecords(records) {
+        const wrapped = new Array(records.length);
+        for (let i = 0; i < records.length; i++) {
+          wrapped[i] = {
+            __id: records[i].__id,
+            value: records[i],
+          };
+        }
+        return wrapped;
       }
 
       async function benchmarkRelayPipelineInMemory(normalized) {
@@ -921,6 +1041,40 @@
         };
       }
 
+      /**
+       * Benchmarks Relay-like normalize/write + denormalize/read pipeline using RxDB.
+       * `normalized` includes `{records, rootID}` and `storageKind` is 'dexie' or 'memory'.
+       */
+      async function benchmarkRelayPipelineRxDB(normalized, storageKind) {
+        const recordsArray = recordsObjectToArray(normalized.records);
+        const {db, collection} = await createRxDBCollection(storageKind);
+        try {
+          const wrapped = wrapRecords(recordsArray);
+          const normalizeWriteStart = now();
+          await collection.bulkUpsert(wrapped);
+          const normalizeWriteMs = now() - normalizeWriteStart;
+
+          const denormalizeReadStart = now();
+          const denormalized = await denormalizeRelayLikePayload(async id => {
+            const doc = await collection.findOne(id).exec();
+            return doc === null ? null : doc.toJSON().value;
+          }, normalized.rootID);
+          const denormalizeReadMs = now() - denormalizeReadStart;
+          return {
+            name: `relay-store-rxdb-${storageKind}-pipeline`,
+            normalizeWriteMs,
+            denormalizeReadMs,
+            normalizedRecordCount: recordsArray.length,
+            denormalizedUsers:
+              denormalized != null && denormalized.users != null
+                ? denormalized.users.length
+                : 0,
+          };
+        } finally {
+          await db.remove();
+        }
+      }
+
       function pickReadIDs(recordCount, readSampleCount) {
         const ids = new Array(readSampleCount);
         for (let i = 0; i < readSampleCount; i++) {
@@ -950,9 +1104,11 @@
         const relayFriendsPerUser = Number(
           document.getElementById('relayFriendsPerUser').value,
         );
+        const runRxDBScenarios = document.getElementById('runRxDBScenarios')
+          .checked;
 
         log(
-          `Running with recordCount=${recordCount}, readSampleCount=${readSampleCount}, hotCacheSize=${hotCacheSize}, workerReadChunkSize=${workerReadChunkSize}, relayPayloadUserCount=${relayPayloadUserCount}, relayFriendsPerUser=${relayFriendsPerUser}`,
+          `Running with recordCount=${recordCount}, readSampleCount=${readSampleCount}, hotCacheSize=${hotCacheSize}, workerReadChunkSize=${workerReadChunkSize}, relayPayloadUserCount=${relayPayloadUserCount}, relayFriendsPerUser=${relayFriendsPerUser}, runRxDBScenarios=${runRxDBScenarios}`,
         );
 
         const records = new Array(recordCount);
@@ -1000,6 +1156,29 @@
             );
           log(formatResult(workerIDBHighMessages));
 
+          if (runRxDBScenarios) {
+            try {
+              const rxdbDexie = await benchmarkRxDBStorage(
+                records,
+                readIDs,
+                'dexie',
+              );
+              log(formatResult(rxdbDexie));
+              const rxdbMemory = await benchmarkRxDBStorage(
+                records,
+                readIDs,
+                'memory',
+              );
+              log(formatResult(rxdbMemory));
+            } catch (error) {
+              log(
+                `RxDB storage benchmarks skipped due to import or initialization error: ${String(
+                  error,
+                )}`,
+              );
+            }
+          }
+
           const relayPayload = makeRelayLikePayload(
             relayPayloadUserCount,
             relayFriendsPerUser,
@@ -1037,6 +1216,27 @@
               hotCacheSize,
             );
           log(formatResult(relayWorkerHighMessage));
+
+          if (runRxDBScenarios) {
+            try {
+              const relayRxDBDexie = await benchmarkRelayPipelineRxDB(
+                relayNormalized,
+                'dexie',
+              );
+              log(formatResult(relayRxDBDexie));
+              const relayRxDBMemory = await benchmarkRelayPipelineRxDB(
+                relayNormalized,
+                'memory',
+              );
+              log(formatResult(relayRxDBMemory));
+            } catch (error) {
+              log(
+                `Relay RxDB pipeline benchmarks skipped due to import or initialization error: ${String(
+                  error,
+                )}`,
+              );
+            }
+          }
         } finally {
           db.close();
         }

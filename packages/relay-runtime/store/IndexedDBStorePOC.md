@@ -58,6 +58,8 @@ The benchmark compares:
 3. **IDB direct with bounded hot cache** (target architecture)
 4. **IDB via worker + postMessage + bounded hot cache** (worker-thread IDB pattern)
 5. **IDB via worker + high postMessage volume** (worker pattern under heavy messaging overhead)
+6. **RxDB + Dexie storage** (RxDB abstraction over IndexedDB)
+7. **RxDB + Memory storage** (in-memory storage baseline through RxDB APIs)
 
 ### Measurements
 
@@ -84,6 +86,13 @@ Relay-like pipeline scenario names in benchmark output:
 - `relay-store-idb-direct-bounded-hot-cache-pipeline`
 - `relay-store-idb-worker-postmessage-bounded-hot-cache-pipeline`
 - `relay-store-idb-worker-postmessage-high-message-volume-pipeline`
+- `relay-store-rxdb-dexie-pipeline`
+- `relay-store-rxdb-memory-pipeline`
+
+Additional storage/read scenario names in benchmark output:
+
+- `rxdb-dexie`
+- `rxdb-memory`
 
 ## How to run benchmark
 
