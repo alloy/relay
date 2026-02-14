@@ -76,6 +76,37 @@
         return null;
       }
 
+      function heapDelta(startHeap, endHeap) {
+        if (startHeap === null || endHeap === null) {
+          return null;
+        }
+        return endHeap - startHeap;
+      }
+
+      function combinedHeapDelta(mainDelta, workerDelta) {
+        const main = mainDelta === null ? 0 : mainDelta;
+        const worker = workerDelta === null ? 0 : workerDelta;
+        if (mainDelta === null && workerDelta === null) {
+          return null;
+        }
+        return main + worker;
+      }
+
+      async function userAgentMemoryBytes() {
+        if (
+          typeof performance !== 'undefined' &&
+          typeof performance.measureUserAgentSpecificMemory === 'function'
+        ) {
+          try {
+            const result = await performance.measureUserAgentSpecificMemory();
+            return result.bytes;
+          } catch (_error) {
+            return null;
+          }
+        }
+        return null;
+      }
+
       function makeRecord(id) {
         return {
           __id: id,
@@ -341,6 +372,12 @@
               }
             });
           }
+          function getHeapBytes() {
+            if (typeof performance !== 'undefined' && performance.memory) {
+              return performance.memory.usedJSHeapSize;
+            }
+            return null;
+          }
           self.onmessage = async event => {
             const {id, command, payload} = event.data;
             try {
@@ -351,6 +388,8 @@
                 await bulkWrite(payload.records);
               } else if (command === 'bulkReadByIDs') {
                 result = await bulkReadByIDs(payload.ids);
+              } else if (command === 'getHeapBytes') {
+                result = getHeapBytes();
               } else {
                 throw new Error('Unknown command: ' + command);
               }
@@ -388,6 +427,7 @@
           clear: () => send('clear', {}),
           bulkWrite: records => send('bulkWrite', {records}),
           bulkReadByIDs: ids => send('bulkReadByIDs', {ids}),
+          getHeapBytes: () => send('getHeapBytes', {}),
           dispose: () => worker.terminate(),
         };
       }
@@ -448,8 +488,7 @@
           writeMs,
           coldMs,
           warmMs,
-          heapDeltaBytes:
-            startHeap != null && endHeap != null ? endHeap - startHeap : null,
+          heapDeltaBytes: heapDelta(startHeap, endHeap),
           memoryProxy: `mapSize=${map.size}`,
         };
       }
@@ -488,8 +527,7 @@
           materializeMs,
           coldMs,
           warmMs,
-          heapDeltaBytes:
-            startHeap != null && endHeap != null ? endHeap - startHeap : null,
+          heapDeltaBytes: heapDelta(startHeap, endHeap),
           memoryProxy: `materializedMapSize=${map.size}`,
         };
       }
@@ -543,8 +581,7 @@
           coldMs,
           warmMs,
           warmMisses: misses,
-          heapDeltaBytes:
-            startHeap != null && endHeap != null ? endHeap - startHeap : null,
+          heapDeltaBytes: heapDelta(startHeap, endHeap),
           memoryProxy: `hotCacheSize=${cache.size()}/${hotCacheSize}`,
         };
       }
@@ -555,11 +592,15 @@
         hotCacheSize,
         readChunkSize,
       ) {
-        const startHeap = heapBytes();
+        // Intentionally sample user-agent memory before running benchmark
+        // operations. This may include worker memory when supported.
+        const startUserAgentMemory = await userAgentMemoryBytes();
+        const startMainHeap = heapBytes();
         const cache = new HotCache(hotCacheSize);
         const workerClient = createWorkerClient();
         try {
           await workerClient.clear();
+          const startWorkerHeap = await workerClient.getHeapBytes();
           const writeStart = now();
           await workerClient.bulkWrite(records);
           const writeMs = now() - writeStart;
@@ -600,7 +641,22 @@
             }
           }
           const warmMs = now() - warmStart;
-          const endHeap = heapBytes();
+          const endMainHeap = heapBytes();
+          const endUserAgentMemory = await userAgentMemoryBytes();
+          const endWorkerHeap = await workerClient.getHeapBytes();
+          const mainHeapDeltaBytes = heapDelta(startMainHeap, endMainHeap);
+          const uaMemoryDeltaBytes = heapDelta(
+            startUserAgentMemory,
+            endUserAgentMemory,
+          );
+          // If UA memory is available, derive worker delta from
+          // combined(main+worker)-main. This can be noisy and may be negative
+          // due to GC/allocator movement during sampling; treat negatives as
+          // measurement noise instead of guaranteed memory savings.
+          const workerHeapDeltaBytes =
+            uaMemoryDeltaBytes !== null && mainHeapDeltaBytes !== null
+              ? uaMemoryDeltaBytes - mainHeapDeltaBytes
+              : heapDelta(startWorkerHeap, endWorkerHeap);
 
           return {
             name: 'idb-worker-postmessage-bounded-hot-cache',
@@ -613,10 +669,19 @@
               1 +
               Math.ceil(readIDs.length / Math.max(readChunkSize, 1)) +
               Math.ceil(Math.max(misses, 0) / Math.max(readChunkSize, 1)),
+            mainHeapDeltaBytes,
+            workerHeapDeltaBytes,
+            uaMemoryDeltaBytes,
             heapDeltaBytes:
-              startHeap !== null && endHeap !== null
-                ? endHeap - startHeap
-                : null,
+              uaMemoryDeltaBytes !== null
+                ? uaMemoryDeltaBytes
+                : combinedHeapDelta(mainHeapDeltaBytes, workerHeapDeltaBytes),
+            heapDeltaAccounting:
+              uaMemoryDeltaBytes !== null
+                ? 'userAgent(main+worker)'
+                : workerHeapDeltaBytes !== null
+                  ? 'main+worker'
+                  : 'main-only-fallback',
             memoryProxy: `hotCacheSize=${cache.size()}/${hotCacheSize}`,
           };
         } finally {
@@ -773,6 +838,11 @@
         const cache = new HotCache(hotCacheSize);
         try {
           await workerClient.clear();
+          // Intentionally sample user-agent memory before running benchmark
+          // operations. This may include worker memory when supported.
+          const startUserAgentMemory = await userAgentMemoryBytes();
+          const startMainHeap = heapBytes();
+          const startWorkerHeap = await workerClient.getHeapBytes();
           const writeStart = now();
           await workerClient.bulkWrite(recordsArray);
           const normalizeWriteMs = now() - writeStart;
@@ -791,11 +861,40 @@
             return record;
           }, normalized.rootID);
           const denormalizeReadMs = now() - readStart;
+          const endMainHeap = heapBytes();
+          const endUserAgentMemory = await userAgentMemoryBytes();
+          const endWorkerHeap = await workerClient.getHeapBytes();
+          const mainHeapDeltaBytes = heapDelta(startMainHeap, endMainHeap);
+          const uaMemoryDeltaBytes = heapDelta(
+            startUserAgentMemory,
+            endUserAgentMemory,
+          );
+          // If UA memory is available, derive worker delta from
+          // combined(main+worker)-main. This can be noisy and may be negative
+          // due to GC/allocator movement during sampling; treat negatives as
+          // measurement noise instead of guaranteed memory savings.
+          const workerHeapDeltaBytes =
+            uaMemoryDeltaBytes !== null && mainHeapDeltaBytes !== null
+              ? uaMemoryDeltaBytes - mainHeapDeltaBytes
+              : heapDelta(startWorkerHeap, endWorkerHeap);
           return {
             name: 'relay-store-idb-worker-postmessage-bounded-hot-cache-pipeline',
             normalizeWriteMs,
             denormalizeReadMs,
             readChunkSize,
+            mainHeapDeltaBytes,
+            workerHeapDeltaBytes,
+            uaMemoryDeltaBytes,
+            heapDeltaBytes:
+              uaMemoryDeltaBytes !== null
+                ? uaMemoryDeltaBytes
+                : combinedHeapDelta(mainHeapDeltaBytes, workerHeapDeltaBytes),
+            heapDeltaAccounting:
+              uaMemoryDeltaBytes !== null
+                ? 'userAgent(main+worker)'
+                : workerHeapDeltaBytes !== null
+                  ? 'main+worker'
+                  : 'main-only-fallback',
             normalizedRecordCount: recordsArray.length,
             denormalizedUsers:
               denormalized != null && denormalized.users != null

@@ -66,6 +66,13 @@ The benchmark compares:
 - Warm read time (ms)
 - Heap usage (if browser exposes `performance.memory`)
 - Cache sizes / record counts as memory proxy
+- Worker scenarios include `mainHeapDeltaBytes`, `workerHeapDeltaBytes`, and combined `heapDeltaBytes`
+- Worker scenarios also report `uaMemoryDeltaBytes` when browser supports `measureUserAgentSpecificMemory()`; this is preferred for combined main+worker memory delta.
+- Worker scenarios include `heapDeltaAccounting`:
+  - `userAgent(main+worker)`: preferred combined delta (main + worker) via user-agent memory API
+  - `main+worker`: combined delta from separate main + worker heap sampling
+  - `main-only-fallback`: worker memory unavailable in environment; interpret as incomplete
+- Negative worker-related deltas can appear due to GC/allocator noise during sampling and should not be interpreted as guaranteed memory reductions.
 - Relay-like pipeline timings:
   - normalize+write of large nested query payload
   - denormalize/read into nested hierarchy from normalized records
