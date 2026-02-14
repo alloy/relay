@@ -57,6 +57,7 @@ The benchmark compares:
 2. **IDB + full materialization** (persist + duplicate memory source)
 3. **IDB direct with bounded hot cache** (target architecture)
 4. **IDB via worker + postMessage + bounded hot cache** (worker-thread IDB pattern)
+5. **IDB via worker + high postMessage volume** (worker pattern under heavy messaging overhead)
 
 ### Measurements
 

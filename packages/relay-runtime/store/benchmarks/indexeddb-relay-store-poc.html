@@ -26,7 +26,8 @@
     <h1>Relay IndexedDB Store POC Benchmark</h1>
     <p>
       Compares in-memory only vs IDB + full materialization vs IDB direct with
-      bounded hot cache vs IDB via worker postMessage with bounded hot cache.
+      bounded hot cache vs IDB via worker postMessage with bounded hot cache vs
+      high-message-volume worker postMessage.
     </p>
     <label>
       Record count:
@@ -39,6 +40,10 @@
     <label>
       Hot cache size (IDB direct):
       <input id="hotCacheSize" type="number" value="1000" min="100" step="100" />
+    </label>
+    <label>
+      Worker read chunk size (lower = more postMessage traffic):
+      <input id="workerReadChunkSize" type="number" value="100" min="1" step="1" />
     </label>
     <button id="run">Run benchmark</button>
     <pre id="output"></pre>
@@ -416,6 +421,7 @@
         records,
         readIDs,
         hotCacheSize,
+        readChunkSize,
       ) {
         const startHeap = heapBytes();
         const cache = new HotCache(hotCacheSize);
@@ -427,7 +433,11 @@
           const writeMs = now() - writeStart;
 
           const coldStart = now();
-          const coldValues = await workerClient.bulkReadByIDs(readIDs);
+          const coldValues = await workerReadChunked(
+            workerClient,
+            readIDs,
+            readChunkSize,
+          );
           for (let i = 0; i < readIDs.length; i++) {
             if (coldValues[i] !== null) {
               cache.set(readIDs[i], coldValues[i]);
@@ -446,7 +456,11 @@
             }
           }
           if (missIDs.length > 0) {
-            const missValues = await workerClient.bulkReadByIDs(missIDs);
+            const missValues = await workerReadChunked(
+              workerClient,
+              missIDs,
+              readChunkSize,
+            );
             for (let i = 0; i < missIDs.length; i++) {
               if (missValues[i] !== null) {
                 cache.set(missIDs[i], missValues[i]);
@@ -462,6 +476,11 @@
             coldMs,
             warmMs,
             warmMisses: misses,
+            readChunkSize,
+            messageRequestsApprox:
+              1 +
+              Math.ceil(readIDs.length / Math.max(readChunkSize, 1)) +
+              Math.ceil(Math.max(misses, 0) / Math.max(readChunkSize, 1)),
             heapDeltaBytes:
               startHeap !== null && endHeap !== null
                 ? endHeap - startHeap
@@ -471,6 +490,39 @@
         } finally {
           workerClient.dispose();
         }
+      }
+
+      async function workerReadChunked(workerClient, ids, chunkSize) {
+        const chunks = [];
+        const safeChunkSize = Math.max(chunkSize, 1);
+        for (let i = 0; i < ids.length; i += safeChunkSize) {
+          const chunk = ids.slice(i, i + safeChunkSize);
+          chunks.push(chunk);
+        }
+        const values = [];
+        for (let i = 0; i < chunks.length; i++) {
+          const chunkValues = await workerClient.bulkReadByIDs(chunks[i]);
+          for (let j = 0; j < chunkValues.length; j++) {
+            values.push(chunkValues[j]);
+          }
+        }
+        return values;
+      }
+
+      async function benchmarkIDBWorkerPostMessageHighMessageVolume(
+        records,
+        readIDs,
+        hotCacheSize,
+      ) {
+        return benchmarkIDBWorkerPostMessageWithHotCache(
+          records,
+          readIDs,
+          hotCacheSize,
+          1,
+        ).then(result => ({
+          ...result,
+          name: 'idb-worker-postmessage-high-message-volume',
+        }));
       }
 
       function pickReadIDs(recordCount, readSampleCount) {
@@ -493,9 +545,12 @@
           document.getElementById('readSampleCount').value,
         );
         const hotCacheSize = Number(document.getElementById('hotCacheSize').value);
+        const workerReadChunkSize = Number(
+          document.getElementById('workerReadChunkSize').value,
+        );
 
         log(
-          `Running with recordCount=${recordCount}, readSampleCount=${readSampleCount}, hotCacheSize=${hotCacheSize}`,
+          `Running with recordCount=${recordCount}, readSampleCount=${readSampleCount}, hotCacheSize=${hotCacheSize}, workerReadChunkSize=${workerReadChunkSize}`,
         );
 
         const records = new Array(recordCount);
@@ -531,8 +586,17 @@
             records,
             readIDs,
             hotCacheSize,
+            workerReadChunkSize,
           );
           log(formatResult(workerIDB));
+
+          const workerIDBHighMessages =
+            await benchmarkIDBWorkerPostMessageHighMessageVolume(
+              records,
+              readIDs,
+              hotCacheSize,
+            );
+          log(formatResult(workerIDBHighMessages));
         } finally {
           db.close();
         }
