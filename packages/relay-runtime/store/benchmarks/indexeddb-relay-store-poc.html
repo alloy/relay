@@ -45,6 +45,14 @@
       Worker read chunk size (lower = more postMessage traffic):
       <input id="workerReadChunkSize" type="number" value="100" min="1" step="1" />
     </label>
+    <label>
+      Relay payload user count:
+      <input id="relayPayloadUserCount" type="number" value="2000" min="100" step="100" />
+    </label>
+    <label>
+      Relay payload friends per user:
+      <input id="relayFriendsPerUser" type="number" value="3" min="1" step="1" />
+    </label>
     <button id="run">Run benchmark</button>
     <pre id="output"></pre>
     <script>
@@ -145,6 +153,130 @@
           request.onerror = () => reject(request.error);
           request.onsuccess = () => resolve(request.result);
         });
+      }
+
+      function readByID(db, id) {
+        return new Promise((resolve, reject) => {
+          const tx = db.transaction([STORE_NAME], 'readonly');
+          const request = tx.objectStore(STORE_NAME).get(id);
+          request.onerror = () => reject(request.error);
+          request.onsuccess = () => resolve(request.result || null);
+        });
+      }
+
+      function makeRelayLikePayload(userCount, friendsPerUser) {
+        const users = new Array(userCount);
+        for (let i = 0; i < userCount; i++) {
+          const userID = makeRecordID(i);
+          const friends = new Array(friendsPerUser);
+          for (let j = 0; j < friendsPerUser; j++) {
+            const friendIndex = (i * friendsPerUser + j + 1) % userCount;
+            const friendID = `friend:${i}:${j}:${friendIndex}`;
+            friends[j] = {
+              __id: friendID,
+              __typename: 'User',
+              id: friendID,
+              name: `Friend ${friendID}`,
+              score: friendIndex,
+            };
+          }
+          users[i] = {
+            __id: userID,
+            __typename: 'User',
+            id: userID,
+            name: `User ${i}`,
+            score: i,
+            friends,
+          };
+        }
+        return {
+          __id: 'root',
+          __typename: 'Query',
+          users,
+        };
+      }
+
+      function normalizeRelayLikePayload(payload) {
+        const records = {};
+        const rootID = payload.__id;
+        const userIDs = [];
+        records[rootID] = {
+          __id: rootID,
+          __typename: payload.__typename,
+          userIDs,
+        };
+        const users = payload.users;
+        for (let i = 0; i < users.length; i++) {
+          const user = users[i];
+          userIDs.push(user.__id);
+          const friendIDs = [];
+          records[user.__id] = {
+            __id: user.__id,
+            __typename: user.__typename,
+            id: user.id,
+            name: user.name,
+            score: user.score,
+            friendIDs,
+          };
+          for (let j = 0; j < user.friends.length; j++) {
+            const friend = user.friends[j];
+            friendIDs.push(friend.__id);
+            records[friend.__id] = {
+              __id: friend.__id,
+              __typename: friend.__typename,
+              id: friend.id,
+              name: friend.name,
+              score: friend.score,
+              friendIDs: [],
+            };
+          }
+        }
+        return {rootID, records};
+      }
+
+      async function denormalizeRelayLikePayload(getRecord, rootID) {
+        const rootRecord = await getRecord(rootID);
+        if (rootRecord == null) {
+          return null;
+        }
+        const userIDs = rootRecord.userIDs || [];
+        const users = new Array(userIDs.length);
+        for (let i = 0; i < userIDs.length; i++) {
+          const userRecord = await getRecord(userIDs[i]);
+          if (userRecord == null) {
+            users[i] = null;
+            continue;
+          }
+          const friendIDs = userRecord.friendIDs || [];
+          const friends = new Array(friendIDs.length);
+          for (let j = 0; j < friendIDs.length; j++) {
+            const friendRecord = await getRecord(friendIDs[j]);
+            friends[j] =
+              friendRecord == null
+                ? null
+                : {
+                    __id: friendRecord.__id,
+                    __typename: friendRecord.__typename,
+                    id: friendRecord.id,
+                    name: friendRecord.name,
+                    score: friendRecord.score,
+                    friends: [],
+                  };
+          }
+          users[i] = {
+            __id: userRecord.__id,
+            __typename: userRecord.__typename,
+            id: userRecord.id,
+            name: userRecord.name,
+            score: userRecord.score,
+            friends,
+          };
+        }
+        return {
+          __id: rootRecord.__id,
+          __typename: rootRecord.__typename,
+          users,
+        };
       }
 
       function createWorkerClient() {
@@ -525,6 +657,171 @@
         }));
       }
 
+      function recordsObjectToArray(records) {
+        const ids = Object.keys(records);
+        const out = new Array(ids.length);
+        for (let i = 0; i < ids.length; i++) {
+          out[i] = records[ids[i]];
+        }
+        return out;
+      }
+
+      async function benchmarkRelayPipelineInMemory(normalized) {
+        const {records, rootID} = normalized;
+        const writeStart = now();
+        const map = new Map();
+        const ids = Object.keys(records);
+        for (let i = 0; i < ids.length; i++) {
+          map.set(ids[i], records[ids[i]]);
+        }
+        const normalizeWriteMs = now() - writeStart;
+
+        const readStart = now();
+        const denormalized = await denormalizeRelayLikePayload(
+          id => Promise.resolve(map.get(id) || null),
+          rootID,
+        );
+        const denormalizeReadMs = now() - readStart;
+        return {
+          name: 'relay-store-in-memory-pipeline',
+          normalizeWriteMs,
+          denormalizeReadMs,
+          normalizedRecordCount: ids.length,
+          denormalizedUsers:
+            denormalized != null && denormalized.users != null
+              ? denormalized.users.length
+              : 0,
+        };
+      }
+
+      async function benchmarkRelayPipelineIDBMaterialized(db, normalized) {
+        const recordsArray = recordsObjectToArray(normalized.records);
+        const writeStart = now();
+        await bulkWrite(db, recordsArray);
+        const normalizeWriteMs = now() - writeStart;
+
+        const materializeStart = now();
+        const all = await readAll(db);
+        const map = new Map();
+        for (let i = 0; i < all.length; i++) {
+          map.set(all[i].__id, all[i]);
+        }
+        const materializeMs = now() - materializeStart;
+
+        const readStart = now();
+        const denormalized = await denormalizeRelayLikePayload(
+          id => Promise.resolve(map.get(id) || null),
+          normalized.rootID,
+        );
+        const denormalizeReadMs = now() - readStart;
+        return {
+          name: 'relay-store-idb-plus-materialized-memory-pipeline',
+          normalizeWriteMs,
+          materializeMs,
+          denormalizeReadMs,
+          normalizedRecordCount: recordsArray.length,
+          denormalizedUsers:
+            denormalized != null && denormalized.users != null
+              ? denormalized.users.length
+              : 0,
+        };
+      }
+
+      async function benchmarkRelayPipelineIDBDirect(
+        db,
+        normalized,
+        hotCacheSize,
+      ) {
+        const recordsArray = recordsObjectToArray(normalized.records);
+        const cache = new HotCache(hotCacheSize);
+        const writeStart = now();
+        await bulkWrite(db, recordsArray);
+        const normalizeWriteMs = now() - writeStart;
+
+        const readStart = now();
+        const denormalized = await denormalizeRelayLikePayload(async id => {
+          const cached = cache.get(id);
+          if (cached !== undefined) {
+            return cached;
+          }
+          const record = await readByID(db, id);
+          if (record !== null) {
+            cache.set(id, record);
+          }
+          return record;
+        }, normalized.rootID);
+        const denormalizeReadMs = now() - readStart;
+        return {
+          name: 'relay-store-idb-direct-bounded-hot-cache-pipeline',
+          normalizeWriteMs,
+          denormalizeReadMs,
+          normalizedRecordCount: recordsArray.length,
+          denormalizedUsers:
+            denormalized != null && denormalized.users != null
+              ? denormalized.users.length
+              : 0,
+        };
+      }
+
+      async function benchmarkRelayPipelineWorker(
+        normalized,
+        hotCacheSize,
+        readChunkSize,
+      ) {
+        const recordsArray = recordsObjectToArray(normalized.records);
+        const workerClient = createWorkerClient();
+        const cache = new HotCache(hotCacheSize);
+        try {
+          await workerClient.clear();
+          const writeStart = now();
+          await workerClient.bulkWrite(recordsArray);
+          const normalizeWriteMs = now() - writeStart;
+
+          const readStart = now();
+          const denormalized = await denormalizeRelayLikePayload(async id => {
+            const cached = cache.get(id);
+            if (cached !== undefined) {
+              return cached;
+            }
+            const chunked = await workerReadChunked(workerClient, [id], readChunkSize);
+            const record = chunked[0] || null;
+            if (record !== null) {
+              cache.set(id, record);
+            }
+            return record;
+          }, normalized.rootID);
+          const denormalizeReadMs = now() - readStart;
+          return {
+            name: 'relay-store-idb-worker-postmessage-bounded-hot-cache-pipeline',
+            normalizeWriteMs,
+            denormalizeReadMs,
+            readChunkSize,
+            normalizedRecordCount: recordsArray.length,
+            denormalizedUsers:
+              denormalized != null && denormalized.users != null
+                ? denormalized.users.length
+                : 0,
+          };
+        } finally {
+          workerClient.dispose();
+        }
+      }
+
+      async function benchmarkRelayPipelineWorkerHighMessage(
+        normalized,
+        hotCacheSize,
+      ) {
+        const result = await benchmarkRelayPipelineWorker(
+          normalized,
+          hotCacheSize,
+          1,
+        );
+        return {
+          ...result,
+          name: 'relay-store-idb-worker-postmessage-high-message-volume-pipeline',
+        };
+      }
+
       function pickReadIDs(recordCount, readSampleCount) {
         const ids = new Array(readSampleCount);
         for (let i = 0; i < readSampleCount; i++) {
@@ -548,9 +845,15 @@
         const workerReadChunkSize = Number(
           document.getElementById('workerReadChunkSize').value,
         );
+        const relayPayloadUserCount = Number(
+          document.getElementById('relayPayloadUserCount').value,
+        );
+        const relayFriendsPerUser = Number(
+          document.getElementById('relayFriendsPerUser').value,
+        );
 
         log(
-          `Running with recordCount=${recordCount}, readSampleCount=${readSampleCount}, hotCacheSize=${hotCacheSize}, workerReadChunkSize=${workerReadChunkSize}`,
+          `Running with recordCount=${recordCount}, readSampleCount=${readSampleCount}, hotCacheSize=${hotCacheSize}, workerReadChunkSize=${workerReadChunkSize}, relayPayloadUserCount=${relayPayloadUserCount}, relayFriendsPerUser=${relayFriendsPerUser}`,
         );
 
         const records = new Array(recordCount);
@@ -597,6 +900,44 @@
               hotCacheSize,
             );
           log(formatResult(workerIDBHighMessages));
+
+          const relayPayload = makeRelayLikePayload(
+            relayPayloadUserCount,
+            relayFriendsPerUser,
+          );
+          const relayNormalized = normalizeRelayLikePayload(relayPayload);
+
+          const relayInMemory = await benchmarkRelayPipelineInMemory(
+            relayNormalized,
+          );
+          log(formatResult(relayInMemory));
+
+          await clearDB(db);
+          const relayIDBMaterialized =
+            await benchmarkRelayPipelineIDBMaterialized(db, relayNormalized);
+          log(formatResult(relayIDBMaterialized));
+
+          await clearDB(db);
+          const relayIDBDirect = await benchmarkRelayPipelineIDBDirect(
+            db,
+            relayNormalized,
+            hotCacheSize,
+          );
+          log(formatResult(relayIDBDirect));
+
+          const relayWorker = await benchmarkRelayPipelineWorker(
+            relayNormalized,
+            hotCacheSize,
+            workerReadChunkSize,
+          );
+          log(formatResult(relayWorker));
+
+          const relayWorkerHighMessage =
+            await benchmarkRelayPipelineWorkerHighMessage(
+              relayNormalized,
+              hotCacheSize,
+            );
+          log(formatResult(relayWorkerHighMessage));
         } finally {
           db.close();
         }

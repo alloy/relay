@@ -66,6 +66,17 @@ The benchmark compares:
 - Warm read time (ms)
 - Heap usage (if browser exposes `performance.memory`)
 - Cache sizes / record counts as memory proxy
+- Relay-like pipeline timings:
+  - normalize+write of large nested query payload
+  - denormalize/read into nested hierarchy from normalized records
+
+Relay-like pipeline scenario names in benchmark output:
+
+- `relay-store-in-memory-pipeline`
+- `relay-store-idb-plus-materialized-memory-pipeline`
+- `relay-store-idb-direct-bounded-hot-cache-pipeline`
+- `relay-store-idb-worker-postmessage-bounded-hot-cache-pipeline`
+- `relay-store-idb-worker-postmessage-high-message-volume-pipeline`
 
 ## How to run benchmark
 
