@@ -80,6 +80,7 @@
     "react-dom": "0.0.0-experimental-7670501b-20241124",
     "react-refresh": "0.0.0-experimental-7670501b-20241124",
     "react-test-renderer": "0.0.0-experimental-7670501b-20241124",
+    "relay-runtime": "20.1.1",
     "rxdb": "^16.21.1",
     "rxjs": "^7.8.2",
     "vite": "^6.4.0"

@@ -23,6 +23,7 @@ const RelayFeatureFlags = require('../util/RelayFeatureFlags');
 const RelayIndexedDBRecordSource = require('./RelayIndexedDBRecordSource');
 const RelayModernRecord = require('./RelayModernRecord');
 const RelayRecordState = require('./RelayRecordState');
+const RelayRxDBRecordSource = require('./RelayRxDBRecordSource');
 const {RELAY_RESOLVER_RECORD_TYPENAME} = require('./RelayStoreUtils');
 
 const {EXISTENT, NONEXISTENT, UNKNOWN} = RelayRecordState;
@@ -46,6 +47,12 @@ class RelayRecordSource implements MutableRecordSource {
   }
 
   static create(records?: RecordSourceJSON): MutableRecordSource {
+    if (
+      RelayFeatureFlags.ENABLE_RXDB_RECORD_SOURCE &&
+      RelayRxDBRecordSource.isSupported()
+    ) {
+      return RelayRxDBRecordSource.create(records);
+    }
     if (
       RelayFeatureFlags.ENABLE_INDEXEDDB_RECORD_SOURCE &&
       RelayIndexedDBRecordSource.isSupported()

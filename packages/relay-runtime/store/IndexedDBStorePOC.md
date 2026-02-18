@@ -112,6 +112,26 @@ Then open:
 
 Adjust dataset size and hot-cache size in UI and run multiple times.
 
+### Teams-like React + Relay chat switching simulation
+
+Run the same server:
+
+```bash
+cd /home/runner/work/relay/relay
+npm run benchmark:serve-esm
+```
+
+Then open:
+
+`http://127.0.0.1:8080/packages/relay-runtime/store/benchmarks/teams-relay-chat-sim.html`
+
+This app simulates Teams-style chat switching and reports switch latency and heap
+delta for:
+
+- `relay-in-memory-store`
+- `relay-indexeddb-store`
+- `relay-rxdb-store`
+
 ## Expected decision criteria
 
 Select architecture that:

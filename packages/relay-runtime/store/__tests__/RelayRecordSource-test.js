@@ -17,11 +17,13 @@ const RelayFeatureFlags = require('../../util/RelayFeatureFlags');
 const RelayIndexedDBRecordSource = require('../RelayIndexedDBRecordSource');
 const RelayModernRecord = require('../RelayModernRecord');
 const RelayRecordSource = require('../RelayRecordSource');
+const RelayRxDBRecordSource = require('../RelayRxDBRecordSource');
 const {RELAY_RESOLVER_RECORD_TYPENAME} = require('../RelayStoreUtils');
 
 jest.mock('../../util/RelayFeatureFlags', () => ({
   FILTER_OUT_RELAY_RESOLVER_RECORDS: false,
   ENABLE_INDEXEDDB_RECORD_SOURCE: false,
+  ENABLE_RXDB_RECORD_SOURCE: false,
 }));
 
 describe('RelayRecordSource', () => {
@@ -132,6 +134,7 @@ describe('RelayRecordSource', () => {
 
     afterEach(() => {
       RelayFeatureFlags.ENABLE_INDEXEDDB_RECORD_SOURCE = false;
+      RelayFeatureFlags.ENABLE_RXDB_RECORD_SOURCE = false;
       global.indexedDB = originalIndexedDB;
     });
 
@@ -156,6 +159,15 @@ describe('RelayRecordSource', () => {
 
       const source = RelayRecordSource.create();
       expect(source).toBeInstanceOf(RelayIndexedDBRecordSource);
+    });
+
+    it('creates RelayRxDBRecordSource when enabled and supported', () => {
+      RelayFeatureFlags.ENABLE_RXDB_RECORD_SOURCE = true;
+      // $FlowFixMe[prop-missing]
+      global.indexedDB = {};
+
+      const source = RelayRecordSource.create();
+      expect(source).toBeInstanceOf(RelayRxDBRecordSource);
     });
   });
 

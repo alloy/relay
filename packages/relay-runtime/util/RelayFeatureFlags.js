@@ -93,6 +93,9 @@ export type FeatureFlags = {
 
   // Enable experimental IndexedDB-backed RelayRecordSource.
   ENABLE_INDEXEDDB_RECORD_SOURCE: boolean,
+
+  // Enable experimental RxDB-backed RelayRecordSource.
+  ENABLE_RXDB_RECORD_SOURCE: boolean,
 };
 
 const RelayFeatureFlags: FeatureFlags = {
@@ -126,6 +129,7 @@ const RelayFeatureFlags: FeatureFlags = {
   OPTIMIZE_NOTIFY: false,
   ENABLE_READER_FRAGMENTS_LOGGING: false,
   ENABLE_INDEXEDDB_RECORD_SOURCE: false,
+  ENABLE_RXDB_RECORD_SOURCE: false,
 };
 
 module.exports = RelayFeatureFlags;
