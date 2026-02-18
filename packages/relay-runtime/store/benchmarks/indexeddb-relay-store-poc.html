@@ -3,15 +3,6 @@
   <head>
     <meta charset="utf-8" />
     <title>Relay IndexedDB Store POC Benchmark</title>
-    <script type="importmap">
-      {
-        "imports": {
-          "dexie": "/node_modules/dexie/dist/dexie.mjs",
-          "rxjs": "/node_modules/rxjs/dist/esm/index.js",
-          "rxjs/": "/node_modules/rxjs/dist/esm/"
-        }
-      }
-    </script>
     <style>
       body {
         font-family: sans-serif;
@@ -124,9 +115,9 @@
       async function loadRxDBModules() {
         if (rxdbModulesPromise === null) {
           rxdbModulesPromise = Promise.all([
-            import('/node_modules/rxdb/dist/esm/index.js'),
-            import('/node_modules/rxdb/dist/esm/plugins/storage-dexie/index.js'),
-            import('/node_modules/rxdb/dist/esm/plugins/storage-memory/index.js'),
+            import('/@id/rxdb'),
+            import('/@id/rxdb/plugins/storage-dexie'),
+            import('/@id/rxdb/plugins/storage-memory'),
           ]).then(([rxdb, dexieStorage, memoryStorage]) => ({
             createRxDatabase: rxdb.createRxDatabase,
             getRxStorageDexie: dexieStorage.getRxStorageDexie,
@@ -812,12 +803,16 @@
           await loadRxDBModules();
         const storage =
           storageKind === 'dexie' ? getRxStorageDexie() : getRxStorageMemory();
+        const timestampSuffix = Date.now().toString(36).slice(-4);
+        const randomSuffix = String(Math.floor(Math.random() * 10000)).padStart(
+          4,
+          '0',
+        );
+        const dbName = `rb${storageKind}${timestampSuffix}${randomSuffix}`;
         const db = await createRxDatabase({
-          name: `relayBench_${storageKind}_${Date.now()}_${Math.floor(
-            Math.random() * 10000,
-          )}`,
+          name: dbName,
           multiInstance: false,
-          ignoreDuplicate: true,
+          // Do not set ignoreDuplicate: true because RxDB restricts it to development mode.
           storage,
         });
         const schema = {
@@ -1183,7 +1178,7 @@
               log(
                 `RxDB storage benchmarks skipped due to import or initialization error: ${String(
                   error,
-                )}. Serve from repository root and ensure local node_modules ESM imports are resolvable.`,
+                )}. Serve with npm run benchmark:serve-esm (Vite) from repository root for package-based ESM resolution.`,
               );
             }
           }
@@ -1242,7 +1237,7 @@
               log(
                 `Relay RxDB pipeline benchmarks skipped due to import or initialization error: ${String(
                   error,
-                )}. Serve from repository root and ensure local node_modules ESM imports are resolvable.`,
+                )}. Serve with npm run benchmark:serve-esm (Vite) from repository root for package-based ESM resolution.`,
               );
             }
           }

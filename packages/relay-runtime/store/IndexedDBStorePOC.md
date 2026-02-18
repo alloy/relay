@@ -94,9 +94,8 @@ Additional storage/read scenario names in benchmark output:
 - `rxdb-dexie`
 - `rxdb-memory`
 
-RxDB modules are loaded from local `node_modules` (installed via package manager),
-not from remote CDN imports.
-This requires serving from repository root so `/node_modules/*` paths resolve.
+RxDB modules are loaded from package-manager-installed dependencies and resolved by
+the benchmark server (Vite), not from remote CDN imports.
 
 ## How to run benchmark
 
@@ -104,12 +103,12 @@ From repository root:
 
 ```bash
 cd /home/runner/work/relay/relay
-python3 -m http.server 8000
+npm run benchmark:serve-esm
 ```
 
 Then open:
 
-`http://localhost:8000/packages/relay-runtime/store/benchmarks/indexeddb-relay-store-poc.html`
+`http://127.0.0.1:8080/packages/relay-runtime/store/benchmarks/indexeddb-relay-store-poc.html`
 
 Adjust dataset size and hot-cache size in UI and run multiple times.
 
