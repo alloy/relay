@@ -77,6 +77,7 @@ The benchmark compares:
 - Negative worker-related deltas can appear due to GC/allocator noise during sampling and should not be interpreted as guaranteed memory reductions.
 - Relay-like pipeline timings:
   - normalize+write of large nested query payload
+  - worker materialize + transfer-to-main + normalize-on-main for worker handoff variant
   - denormalize/read into nested hierarchy from normalized records
 
 Relay-like pipeline scenario names in benchmark output:
@@ -84,8 +85,10 @@ Relay-like pipeline scenario names in benchmark output:
 - `relay-store-in-memory-pipeline`
 - `relay-store-idb-plus-materialized-memory-pipeline`
 - `relay-store-idb-direct-bounded-hot-cache-pipeline`
+- `relay-store-idb-main-thread-direct-read-no-cache-pipeline`
 - `relay-store-idb-worker-postmessage-bounded-hot-cache-pipeline`
 - `relay-store-idb-worker-postmessage-high-message-volume-pipeline`
+- `relay-store-idb-worker-materialize-send-main-normalize-pipeline`
 - `relay-store-rxdb-dexie-pipeline`
 - `relay-store-rxdb-memory-pipeline`
 

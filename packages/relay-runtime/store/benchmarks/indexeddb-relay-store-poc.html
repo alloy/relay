@@ -27,7 +27,8 @@
     <p>
       Compares in-memory only vs IDB + full materialization vs IDB direct with
       bounded hot cache vs IDB via worker postMessage with bounded hot cache vs
-      high-message-volume worker postMessage, with optional RxDB storages.
+      high-message-volume worker postMessage, plus worker materialize/send-main
+      and direct main-thread DB read variants, with optional RxDB storages.
     </p>
     <label>
       Record count:
@@ -392,6 +393,15 @@
               }
             });
           }
+          async function readAll() {
+            const db = await openDB();
+            return await new Promise((resolve, reject) => {
+              const tx = db.transaction([STORE_NAME], 'readonly');
+              const request = tx.objectStore(STORE_NAME).getAll();
+              request.onerror = () => reject(request.error);
+              request.onsuccess = () => resolve(request.result);
+            });
+          }
           function getHeapBytes() {
             if (typeof performance !== 'undefined' && performance.memory) {
               return performance.memory.usedJSHeapSize;
@@ -408,6 +418,8 @@
                 await bulkWrite(payload.records);
               } else if (command === 'bulkReadByIDs') {
                 result = await bulkReadByIDs(payload.ids);
+              } else if (command === 'readAll') {
+                result = await readAll();
               } else if (command === 'getHeapBytes') {
                 result = getHeapBytes();
               } else {
@@ -447,6 +459,7 @@
           clear: () => send('clear', {}),
           bulkWrite: records => send('bulkWrite', {records}),
           bulkReadByIDs: ids => send('bulkReadByIDs', {ids}),
+          readAll: () => send('readAll', {}),
           getHeapBytes: () => send('getHeapBytes', {}),
           dispose: () => worker.terminate(),
         };
@@ -952,6 +965,30 @@
         };
       }
 
+      async function benchmarkRelayPipelineIDBDirectNoCache(db, normalized) {
+        const recordsArray = recordsObjectToArray(normalized.records);
+        const writeStart = now();
+        await bulkWrite(db, recordsArray);
+        const normalizeWriteMs = now() - writeStart;
+
+        const readStart = now();
+        const denormalized = await denormalizeRelayLikePayload(
+          id => readByID(db, id),
+          normalized.rootID,
+        );
+        const denormalizeReadMs = now() - readStart;
+        return {
+          name: 'relay-store-idb-main-thread-direct-read-no-cache-pipeline',
+          normalizeWriteMs,
+          denormalizeReadMs,
+          normalizedRecordCount: recordsArray.length,
+          denormalizedUsers:
+            denormalized != null && denormalized.users != null
+              ? denormalized.users.length
+              : 0,
+        };
+      }
+
       async function benchmarkRelayPipelineWorker(
         normalized,
         hotCacheSize,
@@ -1043,6 +1080,53 @@
           ...result,
           name: 'relay-store-idb-worker-postmessage-high-message-volume-pipeline',
         };
+      }
+
+      async function benchmarkRelayPipelineWorkerMaterializeToMain(
+        normalized,
+      ) {
+        const recordsArray = recordsObjectToArray(normalized.records);
+        const workerClient = createWorkerClient();
+        try {
+          await workerClient.clear();
+          const writeStart = now();
+          await workerClient.bulkWrite(recordsArray);
+          const normalizeWriteMs = now() - writeStart;
+
+          const materializeStart = now();
+          const workerMaterialized = await workerClient.readAll();
+          const materializeWorkerMs = now() - materializeStart;
+
+          const mainNormalizeStart = now();
+          const map = new Map();
+          for (let i = 0; i < workerMaterialized.length; i++) {
+            map.set(workerMaterialized[i].__id, workerMaterialized[i]);
+          }
+          const normalizeOnMainMs = now() - mainNormalizeStart;
+
+          const readStart = now();
+          const denormalized = await denormalizeRelayLikePayload(
+            id => Promise.resolve(map.get(id) || null),
+            normalized.rootID,
+          );
+          const denormalizeReadMs = now() - readStart;
+
+          return {
+            name: 'relay-store-idb-worker-materialize-send-main-normalize-pipeline',
+            normalizeWriteMs,
+            materializeWorkerMs,
+            normalizeOnMainMs,
+            denormalizeReadMs,
+            normalizedRecordCount: recordsArray.length,
+            materializedRecordCount: workerMaterialized.length,
+            denormalizedUsers:
+              denormalized != null && denormalized.users != null
+                ? denormalized.users.length
+                : 0,
+          };
+        } finally {
+          workerClient.dispose();
+        }
       }
 
       /**
@@ -1207,6 +1291,13 @@
           );
           log(formatResult(relayIDBDirect));
 
+          await clearDB(db);
+          const relayIDBDirectNoCache = await benchmarkRelayPipelineIDBDirectNoCache(
+            db,
+            relayNormalized,
+          );
+          log(formatResult(relayIDBDirectNoCache));
+
           const relayWorker = await benchmarkRelayPipelineWorker(
             relayNormalized,
             hotCacheSize,
@@ -1220,6 +1311,10 @@
               hotCacheSize,
             );
           log(formatResult(relayWorkerHighMessage));
+
+          const relayWorkerMaterializeMain =
+            await benchmarkRelayPipelineWorkerMaterializeToMain(relayNormalized);
+          log(formatResult(relayWorkerMaterializeMain));
 
           if (runRxDBScenarios) {
             try {
