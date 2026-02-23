@@ -78,6 +78,7 @@ The benchmark compares:
 - Relay-like pipeline timings:
   - normalize+write of large nested query payload
   - worker materialize + transfer-to-main + normalize-on-main for worker handoff variant
+  - worker read + normalize + main-thread `normalizedResponses` ingestion (copy vs transferable transfer)
   - denormalize/read into nested hierarchy from normalized records
 
 Relay-like pipeline scenario names in benchmark output:
@@ -89,6 +90,8 @@ Relay-like pipeline scenario names in benchmark output:
 - `relay-store-idb-worker-postmessage-bounded-hot-cache-pipeline`
 - `relay-store-idb-worker-postmessage-high-message-volume-pipeline`
 - `relay-store-idb-worker-materialize-send-main-normalize-pipeline`
+- `relay-store-idb-worker-read-normalize-normalizedresponses-copy-pipeline`
+- `relay-store-idb-worker-read-normalize-normalizedresponses-transferable-pipeline`
 - `relay-store-rxdb-dexie-pipeline`
 - `relay-store-rxdb-memory-pipeline`
 

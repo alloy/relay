@@ -331,6 +331,26 @@
         };
       }
 
+      function ingestNormalizedResponsesToMap(normalizedResponses) {
+        const map = new Map();
+        for (
+          let responseIndex = 0;
+          responseIndex < normalizedResponses.length;
+          responseIndex++
+        ) {
+          const responseData = normalizedResponses[responseIndex]?.data;
+          if (responseData == null) {
+            continue;
+          }
+          const ids = Object.keys(responseData);
+          for (let idIndex = 0; idIndex < ids.length; idIndex++) {
+            const id = ids[idIndex];
+            map.set(id, responseData[id]);
+          }
+        }
+        return map;
+      }
+
       function createWorkerClient() {
         const workerSource = `
           const DB_NAME = ${JSON.stringify(WORKER_DB_NAME)};
@@ -402,6 +422,91 @@
               request.onsuccess = () => resolve(request.result);
             });
           }
+          async function writePayload(payload) {
+            const db = await openDB();
+            await new Promise((resolve, reject) => {
+              const tx = db.transaction([STORE_NAME], 'readwrite');
+              tx.objectStore(STORE_NAME).put({__id: '__relay_payload__', payload});
+              tx.onerror = () => reject(tx.error);
+              tx.oncomplete = () => resolve();
+            });
+          }
+          async function readPayload() {
+            const db = await openDB();
+            return await new Promise((resolve, reject) => {
+              const tx = db.transaction([STORE_NAME], 'readonly');
+              const request = tx.objectStore(STORE_NAME).get('__relay_payload__');
+              request.onerror = () => reject(request.error);
+              request.onsuccess = () => resolve(request.result ? request.result.payload : null);
+            });
+          }
+          function normalizeRelayLikePayload(payload) {
+            const records = {};
+            const rootID = payload.__id;
+            const userIDs = [];
+            records[rootID] = {
+              __id: rootID,
+              __typename: payload.__typename,
+              userIDs,
+            };
+            const users = payload.users;
+            for (let userIndex = 0; userIndex < users.length; userIndex++) {
+              const user = users[userIndex];
+              userIDs.push(user.__id);
+              const friendIDs = [];
+              records[user.__id] = {
+                __id: user.__id,
+                __typename: user.__typename,
+                id: user.id,
+                name: user.name,
+                score: user.score,
+                friendIDs,
+              };
+              for (
+                let friendIndex = 0;
+                friendIndex < user.friends.length;
+                friendIndex++
+              ) {
+                const friend = user.friends[friendIndex];
+                friendIDs.push(friend.__id);
+                records[friend.__id] = {
+                  __id: friend.__id,
+                  __typename: friend.__typename,
+                  id: friend.id,
+                  name: friend.name,
+                  score: friend.score,
+                  friendIDs: [],
+                };
+              }
+            }
+            return {rootID, records};
+          }
+          async function normalizePayloadToResponseCopy() {
+            const payload = await readPayload();
+            if (payload == null) {
+              return null;
+            }
+            const normalized = normalizeRelayLikePayload(payload);
+            return {
+              rootID: normalized.rootID,
+              normalizedResponses: [
+                {
+                  data: normalized.records,
+                  extensions: {is_normalized: true},
+                },
+              ],
+            };
+          }
+          async function normalizePayloadToResponseTransferable() {
+            const copyResult = await normalizePayloadToResponseCopy();
+            if (copyResult == null) {
+              return null;
+            }
+            // Encode to ArrayBuffer so this variant uses transferable ownership
+            // semantics instead of structured-clone copying.
+            const encoded = new TextEncoder().encode(JSON.stringify(copyResult));
+            return encoded.buffer;
+          }
           function getHeapBytes() {
             if (typeof performance !== 'undefined' && performance.memory) {
               return performance.memory.usedJSHeapSize;
@@ -420,12 +525,25 @@
                 result = await bulkReadByIDs(payload.ids);
               } else if (command === 'readAll') {
                 result = await readAll();
+              } else if (command === 'writePayload') {
+                await writePayload(payload.payload);
+              } else if (command === 'normalizePayloadToResponseCopy') {
+                result = await normalizePayloadToResponseCopy();
+              } else if (command === 'normalizePayloadToResponseTransferable') {
+                result = await normalizePayloadToResponseTransferable();
               } else if (command === 'getHeapBytes') {
                 result = getHeapBytes();
               } else {
                 throw new Error('Unknown command: ' + command);
               }
-              self.postMessage({id, ok: true, result});
+              if (
+                command === 'normalizePayloadToResponseTransferable' &&
+                result instanceof ArrayBuffer
+              ) {
+                self.postMessage({id, ok: true, result}, [result]);
+              } else {
+                self.postMessage({id, ok: true, result});
+              }
             } catch (error) {
               self.postMessage({id, ok: false, error: String(error)});
             }
@@ -448,11 +566,15 @@
             handlers.reject(new Error(error));
           }
         };
-        function send(command, payload) {
+        function send(command, payload, transferables) {
           return new Promise((resolve, reject) => {
             const id = ++nextID;
             pending.set(id, {resolve, reject});
-            worker.postMessage({id, command, payload});
+            if (Array.isArray(transferables) && transferables.length > 0) {
+              worker.postMessage({id, command, payload}, transferables);
+            } else {
+              worker.postMessage({id, command, payload});
+            }
           });
         }
         return {
@@ -460,6 +582,11 @@
           bulkWrite: records => send('bulkWrite', {records}),
           bulkReadByIDs: ids => send('bulkReadByIDs', {ids}),
           readAll: () => send('readAll', {}),
+          writePayload: payload => send('writePayload', {payload}),
+          normalizePayloadToResponseCopy: () =>
+            send('normalizePayloadToResponseCopy', {}),
+          normalizePayloadToResponseTransferable: () =>
+            send('normalizePayloadToResponseTransferable', {}),
           getHeapBytes: () => send('getHeapBytes', {}),
           dispose: () => worker.terminate(),
         };
@@ -1129,6 +1256,70 @@
         }
       }
 
+      async function benchmarkRelayPipelineWorkerNormalizedResponsesIngest(
+        relayPayload,
+        transferMode,
+      ) {
+        const workerClient = createWorkerClient();
+        try {
+          await workerClient.clear();
+          const writePayloadStart = now();
+          await workerClient.writePayload(relayPayload);
+          const writePayloadMs = now() - writePayloadStart;
+
+          const workerReadNormalizeStart = now();
+          let rootID = null;
+          let normalizedResponses = null;
+          if (transferMode === 'transferable') {
+            const transferred =
+              await workerClient.normalizePayloadToResponseTransferable();
+            const decoded = JSON.parse(
+              new TextDecoder().decode(new Uint8Array(transferred)),
+            );
+            rootID = decoded.rootID;
+            normalizedResponses = decoded.normalizedResponses;
+          } else {
+            const copied = await workerClient.normalizePayloadToResponseCopy();
+            rootID = copied?.rootID ?? null;
+            normalizedResponses = copied?.normalizedResponses ?? [];
+          }
+          const workerReadNormalizeMs = now() - workerReadNormalizeStart;
+
+          const ingestStart = now();
+          const map = ingestNormalizedResponsesToMap(normalizedResponses ?? []);
+          const ingestNormalizedResponsesMs = now() - ingestStart;
+
+          const denormalizeReadStart = now();
+          const denormalized =
+            rootID == null
+              ? null
+              : await denormalizeRelayLikePayload(
+                  id => Promise.resolve(map.get(id) || null),
+                  rootID,
+                );
+          const denormalizeReadMs = now() - denormalizeReadStart;
+
+          return {
+            name:
+              transferMode === 'transferable'
+                ? 'relay-store-idb-worker-read-normalize-normalizedresponses-transferable-pipeline'
+                : 'relay-store-idb-worker-read-normalize-normalizedresponses-copy-pipeline',
+            writePayloadMs,
+            workerReadNormalizeMs,
+            ingestNormalizedResponsesMs,
+            denormalizeReadMs,
+            normalizedResponseCount: normalizedResponses?.length ?? 0,
+            normalizedRecordCount: map.size,
+            denormalizedUsers:
+              denormalized != null && denormalized.users != null
+                ? denormalized.users.length
+                : 0,
+          };
+        } finally {
+          workerClient.dispose();
+        }
+      }
+
       /**
        * Benchmarks Relay-like normalize/write + denormalize/read pipeline using RxDB.
        * `normalized` includes `{records, rootID}` and `storageKind` is 'dexie' or 'memory'.
@@ -1315,6 +1506,20 @@
           const relayWorkerMaterializeMain =
             await benchmarkRelayPipelineWorkerMaterializeToMain(relayNormalized);
           log(formatResult(relayWorkerMaterializeMain));
+
+          const relayWorkerNormalizedResponsesCopy =
+            await benchmarkRelayPipelineWorkerNormalizedResponsesIngest(
+              relayPayload,
+              'copy',
+            );
+          log(formatResult(relayWorkerNormalizedResponsesCopy));
+
+          const relayWorkerNormalizedResponsesTransferable =
+            await benchmarkRelayPipelineWorkerNormalizedResponsesIngest(
+              relayPayload,
+              'transferable',
+            );
+          log(formatResult(relayWorkerNormalizedResponsesTransferable));
 
           if (runRxDBScenarios) {
             try {
