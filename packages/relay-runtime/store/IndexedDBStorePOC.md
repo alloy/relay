@@ -68,6 +68,7 @@ The benchmark compares:
 - Warm read time (ms)
 - Heap usage (if browser exposes `performance.memory`)
 - Cache sizes / record counts as memory proxy
+- Per-metric aggregate stats across repeated runs (`mean`, `p50`, `p90`, `min`, `max`)
 - Worker scenarios include `mainHeapDeltaBytes`, `workerHeapDeltaBytes`, and combined `heapDeltaBytes`
 - Worker scenarios also report `uaMemoryDeltaBytes` when browser supports `measureUserAgentSpecificMemory()`; this is preferred for combined main+worker memory delta.
 - Worker scenarios include `heapDeltaAccounting`:
@@ -117,6 +118,9 @@ Then open:
 `http://127.0.0.1:8080/packages/relay-runtime/store/benchmarks/indexeddb-relay-store-poc.html`
 
 Adjust dataset size and hot-cache size in UI and run multiple times.
+Use the **Benchmark iterations** input (for example `10`) to execute each
+scenario repeatedly in one run and reduce noise from JIT warmup and external
+variance.
 
 ### Teams-like React + Relay chat switching simulation
 

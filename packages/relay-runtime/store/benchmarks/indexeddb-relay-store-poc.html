@@ -39,6 +39,10 @@
       <input id="readSampleCount" type="number" value="4000" min="500" step="500" />
     </label>
     <label>
+      Benchmark iterations:
+      <input id="benchmarkIterations" type="number" value="10" min="1" step="1" />
+    </label>
+    <label>
       Hot cache size (IDB direct):
       <input id="hotCacheSize" type="number" value="1000" min="100" step="100" />
     </label>
@@ -1367,11 +1371,82 @@
         return JSON.stringify(result, null, 2);
       }
 
+      function percentile(sortedValues, p) {
+        if (sortedValues.length === 0) {
+          return null;
+        }
+        const index = Math.min(
+          sortedValues.length - 1,
+          Math.ceil((sortedValues.length - 1) * p),
+        );
+        return sortedValues[index];
+      }
+
+      function computeStats(values) {
+        if (values.length === 0) {
+          return null;
+        }
+        const sorted = [...values].sort((a, b) => a - b);
+        const sum = values.reduce((acc, value) => acc + value, 0);
+        return {
+          mean: sum / values.length,
+          p50: percentile(sorted, 0.5),
+          p90: percentile(sorted, 0.9),
+          min: sorted[0],
+          max: sorted[sorted.length - 1],
+        };
+      }
+
+      function aggregateBenchmarkRuns(results) {
+        if (results.length === 0) {
+          return null;
+        }
+        const first = results[0];
+        const output = {
+          name: first.name,
+          iterations: results.length,
+        };
+        const keys = Object.keys(first);
+        for (const key of keys) {
+          if (key === 'name') {
+            continue;
+          }
+          const values = [];
+          let numericOnly = true;
+          for (const result of results) {
+            const value = result[key];
+            if (typeof value === 'number' && Number.isFinite(value)) {
+              values.push(value);
+            } else {
+              numericOnly = false;
+              break;
+            }
+          }
+          if (numericOnly && values.length > 0) {
+            output[`${key}Stats`] = computeStats(values);
+          } else {
+            output[key] = first[key];
+          }
+        }
+        return output;
+      }
+
+      async function runBenchmarkIterations(iterations, benchmarkFn) {
+        const results = [];
+        for (let i = 0; i < iterations; i++) {
+          results.push(await benchmarkFn());
+        }
+        return aggregateBenchmarkRuns(results);
+      }
+
       async function run() {
         document.getElementById('output').textContent = '';
         const recordCount = Number(document.getElementById('recordCount').value);
         const readSampleCount = Number(
           document.getElementById('readSampleCount').value,
+        );
+        const benchmarkIterations = Number(
+          document.getElementById('benchmarkIterations').value,
         );
         const hotCacheSize = Number(document.getElementById('hotCacheSize').value);
         const workerReadChunkSize = Number(
@@ -1387,7 +1462,7 @@
           .checked;
 
         log(
-          `Running with recordCount=${recordCount}, readSampleCount=${readSampleCount}, hotCacheSize=${hotCacheSize}, workerReadChunkSize=${workerReadChunkSize}, relayPayloadUserCount=${relayPayloadUserCount}, relayFriendsPerUser=${relayFriendsPerUser}, runRxDBScenarios=${runRxDBScenarios}`,
+          `Running with recordCount=${recordCount}, readSampleCount=${readSampleCount}, benchmarkIterations=${benchmarkIterations}, hotCacheSize=${hotCacheSize}, workerReadChunkSize=${workerReadChunkSize}, relayPayloadUserCount=${relayPayloadUserCount}, relayFriendsPerUser=${relayFriendsPerUser}, runRxDBScenarios=${runRxDBScenarios}`,
         );
 
         const records = new Array(recordCount);
@@ -1398,55 +1473,68 @@
         const readIDs = pickReadIDs(recordCount, readSampleCount);
         const db = await openDB();
         try {
-          await clearDB(db);
-          const inMemory = await benchmarkInMemory(records, readIDs);
+          const inMemory = await runBenchmarkIterations(
+            benchmarkIterations,
+            () => benchmarkInMemory(records, readIDs),
+          );
           log(formatResult(inMemory));
 
-          await clearDB(db);
-          const idbPlusMemory = await benchmarkIDBWithMaterializedMemory(
-            db,
-            records,
-            readIDs,
+          const idbPlusMemory = await runBenchmarkIterations(
+            benchmarkIterations,
+            async () => {
+              await clearDB(db);
+              return benchmarkIDBWithMaterializedMemory(db, records, readIDs);
+            },
           );
           log(formatResult(idbPlusMemory));
 
-          await clearDB(db);
-          const idbDirect = await benchmarkIDBDirectWithHotCache(
-            db,
-            records,
-            readIDs,
-            hotCacheSize,
+          const idbDirect = await runBenchmarkIterations(
+            benchmarkIterations,
+            async () => {
+              await clearDB(db);
+              return benchmarkIDBDirectWithHotCache(
+                db,
+                records,
+                readIDs,
+                hotCacheSize,
+              );
+            },
           );
           log(formatResult(idbDirect));
 
-          const workerIDB = await benchmarkIDBWorkerPostMessageWithHotCache(
-            records,
-            readIDs,
-            hotCacheSize,
-            workerReadChunkSize,
+          const workerIDB = await runBenchmarkIterations(
+            benchmarkIterations,
+            () =>
+              benchmarkIDBWorkerPostMessageWithHotCache(
+                records,
+                readIDs,
+                hotCacheSize,
+                workerReadChunkSize,
+              ),
           );
           log(formatResult(workerIDB));
 
-          const workerIDBHighMessages =
-            await benchmarkIDBWorkerPostMessageHighMessageVolume(
-              records,
-              readIDs,
-              hotCacheSize,
-            );
+          const workerIDBHighMessages = await runBenchmarkIterations(
+            benchmarkIterations,
+            () =>
+              benchmarkIDBWorkerPostMessageHighMessageVolume(
+                records,
+                readIDs,
+                hotCacheSize,
+              ),
+          );
           log(formatResult(workerIDBHighMessages));
 
           if (runRxDBScenarios) {
             try {
-              const rxdbDexie = await benchmarkRxDBStorage(
-                records,
-                readIDs,
-                'dexie',
+              const rxdbDexie = await runBenchmarkIterations(
+                benchmarkIterations,
+                () => benchmarkRxDBStorage(records, readIDs, 'dexie'),
               );
               log(formatResult(rxdbDexie));
-              const rxdbMemory = await benchmarkRxDBStorage(
-                records,
-                readIDs,
-                'memory',
+              const rxdbMemory = await runBenchmarkIterations(
+                benchmarkIterations,
+                () => benchmarkRxDBStorage(records, readIDs, 'memory'),
               );
               log(formatResult(rxdbMemory));
             } catch (error) {
@@ -1464,73 +1552,99 @@
           );
           const relayNormalized = normalizeRelayLikePayload(relayPayload);
 
-          const relayInMemory = await benchmarkRelayPipelineInMemory(
-            relayNormalized,
+          const relayInMemory = await runBenchmarkIterations(
+            benchmarkIterations,
+            () => benchmarkRelayPipelineInMemory(relayNormalized),
           );
           log(formatResult(relayInMemory));
 
-          await clearDB(db);
-          const relayIDBMaterialized =
-            await benchmarkRelayPipelineIDBMaterialized(db, relayNormalized);
+          const relayIDBMaterialized = await runBenchmarkIterations(
+            benchmarkIterations,
+            async () => {
+              await clearDB(db);
+              return benchmarkRelayPipelineIDBMaterialized(db, relayNormalized);
+            },
+          );
           log(formatResult(relayIDBMaterialized));
 
-          await clearDB(db);
-          const relayIDBDirect = await benchmarkRelayPipelineIDBDirect(
-            db,
-            relayNormalized,
-            hotCacheSize,
+          const relayIDBDirect = await runBenchmarkIterations(
+            benchmarkIterations,
+            async () => {
+              await clearDB(db);
+              return benchmarkRelayPipelineIDBDirect(
+                db,
+                relayNormalized,
+                hotCacheSize,
+              );
+            },
           );
           log(formatResult(relayIDBDirect));
 
-          await clearDB(db);
-          const relayIDBDirectNoCache = await benchmarkRelayPipelineIDBDirectNoCache(
-            db,
-            relayNormalized,
+          const relayIDBDirectNoCache = await runBenchmarkIterations(
+            benchmarkIterations,
+            async () => {
+              await clearDB(db);
+              return benchmarkRelayPipelineIDBDirectNoCache(db, relayNormalized);
+            },
           );
           log(formatResult(relayIDBDirectNoCache));
 
-          const relayWorker = await benchmarkRelayPipelineWorker(
-            relayNormalized,
-            hotCacheSize,
-            workerReadChunkSize,
+          const relayWorker = await runBenchmarkIterations(
+            benchmarkIterations,
+            () =>
+              benchmarkRelayPipelineWorker(
+                relayNormalized,
+                hotCacheSize,
+                workerReadChunkSize,
+              ),
           );
           log(formatResult(relayWorker));
 
-          const relayWorkerHighMessage =
-            await benchmarkRelayPipelineWorkerHighMessage(
-              relayNormalized,
-              hotCacheSize,
-            );
+          const relayWorkerHighMessage = await runBenchmarkIterations(
+            benchmarkIterations,
+            () =>
+              benchmarkRelayPipelineWorkerHighMessage(
+                relayNormalized,
+                hotCacheSize,
+              ),
+          );
           log(formatResult(relayWorkerHighMessage));
 
-          const relayWorkerMaterializeMain =
-            await benchmarkRelayPipelineWorkerMaterializeToMain(relayNormalized);
+          const relayWorkerMaterializeMain = await runBenchmarkIterations(
+            benchmarkIterations,
+            () => benchmarkRelayPipelineWorkerMaterializeToMain(relayNormalized),
+          );
           log(formatResult(relayWorkerMaterializeMain));
 
-          const relayWorkerNormalizedResponsesCopy =
-            await benchmarkRelayPipelineWorkerNormalizedResponsesIngest(
-              relayPayload,
-              'copy',
-            );
+          const relayWorkerNormalizedResponsesCopy = await runBenchmarkIterations(
+            benchmarkIterations,
+            () =>
+              benchmarkRelayPipelineWorkerNormalizedResponsesIngest(
+                relayPayload,
+                'copy',
+              ),
+          );
           log(formatResult(relayWorkerNormalizedResponsesCopy));
 
           const relayWorkerNormalizedResponsesTransferable =
-            await benchmarkRelayPipelineWorkerNormalizedResponsesIngest(
-              relayPayload,
-              'transferable',
+            await runBenchmarkIterations(benchmarkIterations, () =>
+              benchmarkRelayPipelineWorkerNormalizedResponsesIngest(
+                relayPayload,
+                'transferable',
+              ),
             );
           log(formatResult(relayWorkerNormalizedResponsesTransferable));
 
           if (runRxDBScenarios) {
             try {
-              const relayRxDBDexie = await benchmarkRelayPipelineRxDB(
-                relayNormalized,
-                'dexie',
+              const relayRxDBDexie = await runBenchmarkIterations(
+                benchmarkIterations,
+                () => benchmarkRelayPipelineRxDB(relayNormalized, 'dexie'),
               );
               log(formatResult(relayRxDBDexie));
-              const relayRxDBMemory = await benchmarkRelayPipelineRxDB(
-                relayNormalized,
-                'memory',
+              const relayRxDBMemory = await runBenchmarkIterations(
+                benchmarkIterations,
+                () => benchmarkRelayPipelineRxDB(relayNormalized, 'memory'),
               );
               log(formatResult(relayRxDBMemory));
             } catch (error) {
