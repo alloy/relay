@@ -14,12 +14,16 @@
 import type {RecordSourceJSON} from '../RelayStoreTypes';
 
 const RelayFeatureFlags = require('../../util/RelayFeatureFlags');
+const RelayIndexedDBRecordSource = require('../RelayIndexedDBRecordSource');
 const RelayModernRecord = require('../RelayModernRecord');
 const RelayRecordSource = require('../RelayRecordSource');
+const RelayRxDBRecordSource = require('../RelayRxDBRecordSource');
 const {RELAY_RESOLVER_RECORD_TYPENAME} = require('../RelayStoreUtils');
 
 jest.mock('../../util/RelayFeatureFlags', () => ({
   FILTER_OUT_RELAY_RESOLVER_RECORDS: false,
+  ENABLE_INDEXEDDB_RECORD_SOURCE: false,
+  ENABLE_RXDB_RECORD_SOURCE: false,
 }));
 
 describe('RelayRecordSource', () => {
@@ -126,6 +130,14 @@ describe('RelayRecordSource', () => {
   });
 
   describe('static create method', () => {
+    const originalIndexedDB = global.indexedDB;
+
+    afterEach(() => {
+      RelayFeatureFlags.ENABLE_INDEXEDDB_RECORD_SOURCE = false;
+      RelayFeatureFlags.ENABLE_RXDB_RECORD_SOURCE = false;
+      global.indexedDB = originalIndexedDB;
+    });
+
     it('creates a new RelayRecordSource instance', () => {
       const data: RecordSourceJSON = {
         'user:1': {
@@ -138,6 +150,24 @@ describe('RelayRecordSource', () => {
       const source = RelayRecordSource.create(data);
       expect(source).toBeInstanceOf(RelayRecordSource);
       expect(source.has('user:1')).toBe(true);
+    });
+
+    it('creates RelayIndexedDBRecordSource when enabled and supported', () => {
+      RelayFeatureFlags.ENABLE_INDEXEDDB_RECORD_SOURCE = true;
+      // $FlowFixMe[prop-missing]
+      global.indexedDB = {};
+
+      const source = RelayRecordSource.create();
+      expect(source).toBeInstanceOf(RelayIndexedDBRecordSource);
+    });
+
+    it('creates RelayRxDBRecordSource when enabled and supported', () => {
+      RelayFeatureFlags.ENABLE_RXDB_RECORD_SOURCE = true;
+      // $FlowFixMe[prop-missing]
+      global.indexedDB = {};
+
+      const source = RelayRecordSource.create();
+      expect(source).toBeInstanceOf(RelayRxDBRecordSource);
     });
   });
 

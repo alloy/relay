@@ -90,6 +90,12 @@ export type FeatureFlags = {
 
   // Enable logging for reader reading fragment spreads and fragments. Useful for logging unused fragments.
   ENABLE_READER_FRAGMENTS_LOGGING: boolean,
+
+  // Enable experimental IndexedDB-backed RelayRecordSource.
+  ENABLE_INDEXEDDB_RECORD_SOURCE: boolean,
+
+  // Enable experimental RxDB-backed RelayRecordSource.
+  ENABLE_RXDB_RECORD_SOURCE: boolean,
 };
 
 const RelayFeatureFlags: FeatureFlags = {
@@ -122,6 +128,8 @@ const RelayFeatureFlags: FeatureFlags = {
   FILTER_OUT_RELAY_RESOLVER_RECORDS: false,
   OPTIMIZE_NOTIFY: false,
   ENABLE_READER_FRAGMENTS_LOGGING: false,
+  ENABLE_INDEXEDDB_RECORD_SOURCE: false,
+  ENABLE_RXDB_RECORD_SOURCE: false,
 };
 
 module.exports = RelayFeatureFlags;
